@@ -1,0 +1,12 @@
+{
+  "name": "flywheel",
+  "description": "Self-improving memory for Claude Code: mines session transcripts into strategy-level lessons, injects the relevant lesson at the moment a matching problem appears, and promotes recurring lessons into skills and rules. Learns from real outcome signals (user corrections, CI failures, reverted PRs) — no fine-tuning, pure context engineering.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Henry Shan",
+    "url": "https://github.com/Henry-Shan"
+  },
+  "homepage": "https://github.com/Henry-Shan/claude-flywheel",
+  "license": "MIT",
+  "keywords": ["memory", "self-improvement", "lessons", "learning", "reasoningbank", "hooks"]
+}
