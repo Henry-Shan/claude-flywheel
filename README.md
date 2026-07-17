@@ -54,6 +54,24 @@ project's `.claude/settings.json` to offer it to the whole team):
 Requires `python3` on PATH (macOS/Linux default; on Windows ensure the
 `python3` alias exists).
 
+### Staying current (auto-update)
+
+Claude Code pins a plugin to the version present at install time; third-party
+marketplaces default to auto-update **off**, so it's easy to silently run stale
+code. Flywheel guards against that two ways:
+
+- **Update notice** — a `SessionStart` hook checks GitHub (at most once/day,
+  stdlib, fail-silent) and, if a newer version is published, prints a one-line
+  notice with the `/plugin update flywheel@claude-flywheel` command. It never
+  touches the plugin cache (that would desync Claude Code's version tracking) —
+  it only tells you.
+- **True auto-update (recommended)** — enable auto-update for the
+  `claude-flywheel` marketplace once, in `/plugin` → Marketplaces. Claude Code
+  then pulls new versions on its own (applied on next launch / `/reload-plugins`).
+
+Either way you only ever run one explicit update; after that it keeps itself
+current.
+
 ## Set up a project (once per project, ~30s)
 
 ```
@@ -85,18 +103,37 @@ When you want control:
 
 ### The dashboard
 
-`/flywheel:status` writes a self-contained HTML dashboard to
-`~/.claude/flywheel/dashboard.html` (open it in any browser) showing:
+Two ways to view it:
 
-- **Health** — plugin installed? hooks runnable? lessons loaded?
-- **Injection timeline** — every time a lesson fired, when, and which prompt
-  terms matched it (this is the proof it's working)
-- **Lesson catalog** — every lesson with scope, class, signal, and its
-  occurrences / helpful / harmful counters
-- **Mining metrics** — sessions queued vs mined, recurring-mistake count
+- **`/flywheel:serve`** — a **live local web server** (`http://127.0.0.1:8787`)
+  that auto-refreshes every 5s. This is the "always on" view.
+- **`/flywheel:status`** — writes a static snapshot to
+  `~/.claude/flywheel/dashboard.html` (open in any browser), plus a terminal
+  health summary.
 
-A freshly-installed flywheel shows *0 injections* — that's expected; the hooks
-fill the timeline as you work and hit problems that match a stored lesson.
+Both show:
+
+- **Health** — plugin installed? hooks runnable? autopilot on?
+- **"Did it make Claude better?"** — the headline, done honestly: for each
+  lesson it takes *matched tasks* (sessions that hit its problem), compares
+  friction before vs after the lesson was activated, and **subtracts the same
+  before/after change on unrelated tasks** (a difference-in-differences). That
+  nets out model upgrades and you-getting-faster, so an inert lesson reads as
+  *no effect* instead of fake improvement. The split is on an immutable
+  `created` stamp, the triggering session is excluded, and a verdict only shows
+  once each side clears 5 sessions. Until then it says **"can't tell yet."** See
+  [docs/METRICS.md](docs/METRICS.md).
+- **Injection feed** — every lesson that fired, when, and which terms matched.
+- **Lesson catalog** — scope, class, signal, occ/helpful/harmful, last-fired.
+
+**Metrics stay fresh on their own:** a cheap, LLM-free structural extractor
+(`scripts/metrics.py`) runs on every session end (via the SessionEnd hook) and
+records rounds, corrections, interruptions, errors, and a composite *friction*
+score per session into `state/session-metrics.jsonl`. To seed history now:
+`python3 scripts/metrics.py backfill --since 60d`.
+
+A freshly-installed flywheel shows *0 injections* and *"not enough matched
+sessions yet"* — both expected; they fill in as you work.
 
 ## What a lesson looks like
 
@@ -112,6 +149,7 @@ signal: user-correction
 occurrences: 1
 helpful: 0
 harmful: 0
+created: 2026-07-16T14:03:00Z
 tier: lesson
 status: active
 ---
@@ -152,7 +190,9 @@ and every machine/CI runner inherits them on pull. Global-tier lessons follow
     "enabled": true,
     "maxInjections": 2,
     "minScore": 6,
-    "minDistinct": 2
+    "minDistinct": 2,
+    "semanticRerank": false,
+    "embedderCmd": ""
   }
 }
 ```
@@ -161,6 +201,14 @@ and every machine/CI runner inherits them on pull. Global-tier lessons follow
 - `maxInjections` — max lessons injected per prompt
 - `minScore` — weighted keyword-match threshold (higher = quieter)
 - `minDistinct` — distinct matched terms required
+- `semanticRerank` — opt-in. When `true` AND a `state/embeddings.json` vector
+  cache exists AND `embedderCmd` is set, cosine similarity reranks the
+  lexically-matched candidates. Off by default; the matcher is otherwise pure
+  stdlib (keyword + light stemming + synonym canonicalization + TF-IDF rarity
+  weighting), no network, no embeddings.
+- `embedderCmd` — shell command for the opt-in rerank: reads text on stdin,
+  prints a JSON float vector on stdout (e.g. a local embedding model). Only used
+  when `semanticRerank` is true; any failure falls straight back to lexical rank.
 
 (Keep it valid JSON — no comments. A malformed config falls back to defaults.)
 State (injection audit log, mining queue, event log for metrics) lives in

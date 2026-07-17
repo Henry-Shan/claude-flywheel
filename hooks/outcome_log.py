@@ -10,6 +10,7 @@ Fail-silent by design: a hook must never break or stall session teardown.
 
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -67,21 +68,55 @@ def automation_enabled():
         return False
 
 
-def spawn_autopilot():
-    """Fire-and-forget the detached autopilot runner. Returns instantly so the
-    SessionEnd hook never blocks teardown; the runner does the slow work."""
-    autopilot = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts", "autopilot.py")
-    autopilot = os.path.abspath(autopilot)
-    if not os.path.exists(autopilot):
-        return
+def _script(name):
+    return os.path.abspath(os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "..", "scripts", name))
+
+
+def _spawn_detached(argv):
     try:
         subprocess.Popen(
-            [sys.executable, autopilot],
-            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
+            argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, start_new_session=True)
     except OSError:
         pass
+
+
+def spawn_metrics(cwd):
+    """Cheap, LLM-free structural metrics extraction for this project's new
+    sessions — keeps the dashboard's KPIs fresh with no cost. Always runs
+    (detached); backfill is idempotent (skips already-recorded transcripts)."""
+    s = _script("metrics.py")
+    if os.path.exists(s):
+        _spawn_detached([sys.executable, s, "backfill", "--project", cwd or os.getcwd()])
+
+
+def spawn_autopilot():
+    """Fire-and-forget the detached autopilot runner (mining/consolidation).
+    Returns instantly so the SessionEnd hook never blocks teardown."""
+    s = _script("autopilot.py")
+    if os.path.exists(s):
+        _spawn_detached([sys.executable, s])
+
+
+def had_injection(session_id):
+    """True iff inject.py wrote a per-session marker for this id — i.e. at least
+    one lesson was actually injected. Lets us skip the attribution spawn (and its
+    full injections.jsonl scan) for the vast majority of sessions that got none."""
+    if not session_id:
+        return False
+    safe = re.sub(r"[^A-Za-z0-9_-]", "_", session_id)[:80]
+    return os.path.exists(os.path.join(STATE_DIR, f"injected-{safe}.json"))
+
+
+def spawn_attribution(session_id, transcript_path):
+    """Deterministic injection-outcome attribution for the just-ended session:
+    correlate this session's injections with its transcript and bump the matched
+    lessons' helpful/harmful counters + write events.jsonl — from CODE, no LLM,
+    independent of autopilot. Detached + idempotent (one attribution per pair)."""
+    s = _script("attribute.py")
+    if os.path.exists(s) and session_id:
+        _spawn_detached([sys.executable, s, "session", session_id, transcript_path or ""])
 
 
 def main():
@@ -96,7 +131,8 @@ def main():
     except (ValueError, OSError):
         return
 
-    session_id = data.get("session_id") or "unknown"
+    raw_session_id = data.get("session_id")   # real id, before the sentinel coerce
+    session_id = raw_session_id or "unknown"
     transcript_path = data.get("transcript_path") or ""
     cwd = data.get("cwd") or ""
     reason = data.get("reason") or ""  # not guaranteed by all versions
@@ -122,6 +158,15 @@ def main():
         record = dict(record, transcript_bytes=size, mined=False)
         append_line(MINE_QUEUE, record)
         trim_file(MINE_QUEUE, MAX_QUEUE_LINES)
+
+    # Always refresh dashboard metrics for this session (cheap, local, no LLM).
+    spawn_metrics(cwd)
+
+    # Deterministically attribute this session's injections → helpful/harmful
+    # signal (code-only; no LLM). Only for a REAL session id that actually
+    # received an injection — skips the sentinel and the no-injection majority.
+    if raw_session_id and had_injection(raw_session_id):
+        spawn_attribution(raw_session_id, transcript_path)
 
     # If autopilot is enabled, kick the detached runner. It self-guards against
     # recursion, concurrency, and rapid re-runs, so an unconditional nudge here

@@ -160,6 +160,7 @@ occurrences: 1
 helpful: 0
 harmful: 0
 sessions: [<transcript-basename>/L<start>-L<end>]
+created: <UTC ISO8601, e.g. 2026-07-16T14:03:00Z — run `date -u +%Y-%m-%dT%H:%M:%SZ`>
 tier: lesson            # the miner always writes "lesson"; /consolidate promotes
 status: active
 ---
@@ -179,20 +180,29 @@ Schema rules that matter:
   (stdlib, no embeddings) — rich synonyms are what make dynamic recall work.
 - **`sessions:` evidence format** is `<transcript-basename>/L<start>-L<end>`
   (JSONL line range of the incident).
-- **helpful/harmful counters:** check
-  `~/.claude/flywheel/state/injections.jsonl` (one JSON object per injection,
-  keyed by `"session"` and `"lesson"`) for lessons injected into the mined
-  session. If the transcript shows an injected lesson was followed and helped,
-  bump its `helpful`; if it misled, bump `harmful`.
+- **`created` is the activation stamp and is IMMUTABLE.** Write it once, at
+  creation, to the current UTC time. NEVER change it when bumping occurrences or
+  editing the strategy — the dashboard splits before/after friction on this
+  timestamp, so moving it would silently corrupt the "did it help?" measurement.
+  (When you only *bump* an existing lesson, leave its `created` untouched.)
+- **helpful/harmful counters — DO NOT bump these.** They are owned by the
+  deterministic attributor (`scripts/attribute.py`, run automatically at
+  SessionEnd), which correlates `injections.jsonl` with each session's
+  transcript and bumps the counters from code. If you also bumped them here you
+  would DOUBLE-COUNT. You may *read* `~/.claude/flywheel/state/events.jsonl`
+  (the attributor's output) for context on which lessons have been helping, but
+  leave the `helpful:`/`harmful:` frontmatter integers alone.
 
 ## Step 6 — Record events + report
 
-For every lesson written or updated, append one line to
-`~/.claude/flywheel/state/events.jsonl` — this is the metrics source
-`/flywheel:consolidate` reads:
+For every lesson you **write or bump-occurrence**, append one line to
+`~/.claude/flywheel/state/events.jsonl` — the metrics source
+`/flywheel:consolidate` reads. Use ONLY the `add` / `bump-occurrence` ops here;
+`bump-helpful` / `bump-harmful` events are written by the deterministic
+attributor, not by you (see Step 5):
 
 ```json
-{"ts": <unix>, "op": "add|bump-occurrence|bump-helpful|bump-harmful", "lesson": "<id>", "class": "<class>", "scope": "<scope>", "session": "<transcript-basename>"}
+{"ts": <unix>, "op": "add|bump-occurrence", "lesson": "<id>", "class": "<class>", "scope": "<scope>", "session": "<transcript-basename>"}
 ```
 
 End with a compact summary: lessons written (id, class, scope, signal),

@@ -63,7 +63,28 @@ STOPWORDS = frozenset(
     stuff work working code file line""".split()
 )
 
-_SUFFIXES = ("ing", "edly", "ed", "es", "s", "ly")
+_SUFFIXES = ("ings", "ing", "edly", "ed", "es", "s", "ly")
+
+# Synonym canonicalization — the free offline fix for the case pure stemming
+# can't reach: distinct roots that mean the same symptom. Applied AFTER stem() so
+# both a lesson's keywords and the incoming prompt collapse to the same token
+# (e.g. prompt "flaky" and keyword "intermittent" now match). Keys/values are
+# already stemmed forms. Keep entries symptom-oriented, not generic.
+_SYNONYMS = {
+    # symptom synonyms — distinct roots that name the SAME failure. Kept narrow:
+    # polysemous/benign words (empty, hidden, stuck, freeze, random, gone) were
+    # deliberately NOT mapped onto strong symptom keywords, to protect precision.
+    "flaky": "intermittent", "flakey": "intermittent", "sporadic": "intermittent",
+    "nondeterministic": "intermittent",
+    "vanish": "disappear", "deadlock": "race",
+    # abbreviation → canonical (low false-match risk)
+    "creds": "credential", "cred": "credential",
+    "auth": "authentication", "authn": "authentication",
+    "perm": "permission", "rbac": "permission", "acl": "permission",
+    "config": "configuration", "cfg": "configuration",
+    "repro": "reproduce", "dupe": "duplicate", "dedup": "duplicate",
+    "async": "asynchronous",
+}
 
 
 def stem(word: str) -> str:
@@ -77,13 +98,14 @@ def stem(word: str) -> str:
 
 
 def tokens(text: str):
-    """Lowercased, stemmed, stopword-filtered token set."""
+    """Lowercased, stemmed, synonym-canonicalized, stopword-filtered token set."""
     out = set()
     for raw in re.findall(r"[a-z0-9][a-z0-9'_-]+", (text or "").lower()):
         raw = raw.strip("'-_")
         if len(raw) < 3 or raw in STOPWORDS:
             continue
-        out.add(stem(raw))
+        t = stem(raw)
+        out.add(_SYNONYMS.get(t, t))
     return out
 
 
@@ -259,10 +281,38 @@ def lesson_terms(lesson):
     return weights
 
 
-def score_lesson(lesson, prompt_terms, now):
+def compute_idf(lessons):
+    """Mean-normalized inverse document frequency over the lesson corpus. A term
+    matched in MANY lessons (generic — 'read', 'run', 'file') is a weak trigger;
+    one in FEW lessons ('swallowed', 'schema') is a strong discriminator. We scale
+    each term's weight by idf so the discriminators dominate the score. Normalized
+    to mean≈1 so the overall score scale — and therefore MIN_SCORE — is preserved;
+    this reshapes ranking/gating without a blanket inflation."""
+    df, n = {}, 0
+    for lesson in lessons.values():
+        n += 1
+        for t in lesson_terms(lesson):        # distinct terms in this lesson
+            df[t] = df.get(t, 0) + 1
+    if not df:
+        return {}
+    raw = {t: math.log((n + 1) / (d + 1)) + 0.1 for t, d in df.items()}
+    mean = sum(raw.values()) / len(raw)
+    if mean <= 0:
+        return {}
+    return {t: v / mean for t, v in raw.items()}
+
+
+def score_lesson(lesson, prompt_terms, now, idf=None):
     weights = lesson_terms(lesson)
     matched = {t: w for t, w in weights.items() if t in prompt_terms}
+    # Gate on the RAW matched-weight sum so MIN_SCORE stays exactly calibrated
+    # regardless of corpus size; apply idf ONLY to the rank used for ordering, so
+    # rare discriminators sort ahead without moving the firing threshold.
     weighted_sum = sum(matched.values())
+    if idf:
+        rank_sum = sum(w * idf.get(t, 1.0) for t, w in matched.items())
+    else:
+        rank_sum = weighted_sum
     distinct = len(matched)
     strong = sum(1 for w in matched.values() if w >= 3)
     meta = lesson["meta"]
@@ -279,10 +329,10 @@ def score_lesson(lesson, prompt_terms, now):
     age_days = max(0.0, (now - lesson["mtime"]) / 86400.0)
     recency = max(RECENCY_FLOOR, 0.5 ** (age_days / RECENCY_HALF_LIFE_DAYS))
     return {
-        "weighted_sum": weighted_sum,
+        "weighted_sum": weighted_sum,           # raw — for the MIN_SCORE gate
         "distinct": distinct,
         "strong": strong,
-        "rank": weighted_sum * importance * signal_mult * recency,
+        "rank": rank_sum * importance * signal_mult * recency,   # idf-weighted
         "matched": sorted(matched),
     }
 
@@ -293,6 +343,103 @@ def suppressed_as_harmful(meta) -> bool:
     harmful = to_int(meta.get("harmful"))
     helpful = to_int(meta.get("helpful"))
     return harmful >= 2 and harmful > helpful
+
+
+# A prompt is "anaphoric" when it points back at prior context rather than
+# standing on its own ("why?", "fix that", "same error", "it still fails"). Only
+# then do we widen recall with the transcript tail — a self-contained prompt
+# speaks for itself, and pulling stale context would hurt precision.
+_DEICTIC = re.compile(
+    r"\b(why|it|its|it's|that|this|these|those|there|them|again|same|still|"
+    r"the error|the issue|the bug|fix that|do that|same error|same issue)\b",
+    re.IGNORECASE,
+)
+
+
+def recent_context_terms(transcript_path, max_bytes=16384, max_lines=8):
+    """Tokens from the TAIL of the session transcript — catches a stack trace or
+    error pasted in an earlier turn that a terse follow-up prompt ('why?', 'now
+    fix it') only refers to. Byte-bounded, last few records only, fully
+    fail-silent (any problem → empty set, so the default degrades to prompt-only)."""
+    if not transcript_path:
+        return set()
+    try:
+        size = os.path.getsize(transcript_path)
+        with open(transcript_path, "rb") as fh:
+            if size > max_bytes:
+                fh.seek(-max_bytes, os.SEEK_END)
+            chunk = fh.read().decode("utf-8", "replace")
+    except OSError:
+        return set()
+    out = set()
+    for line in chunk.splitlines()[-max_lines:]:
+        try:
+            o = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(o, dict):   # a valid-JSON scalar/array line isn't a turn
+            continue
+        content = (o.get("message") or {}).get("content")
+        if isinstance(content, str):
+            text = content
+        elif isinstance(content, list):
+            text = " ".join(str(it.get("text") or "") for it in content
+                            if isinstance(it, dict))
+        else:
+            text = ""
+        if text:
+            out |= tokens(text[:4000])
+    return out
+
+
+# --- Opt-in semantic rerank (default OFF; the stdlib path never touches this) --
+
+def _cosine(a, b):
+    n = min(len(a), len(b))
+    dot = sum(a[i] * b[i] for i in range(n))
+    da = math.sqrt(sum(x * x for x in a))
+    db = math.sqrt(sum(x * x for x in b))
+    return dot / (da * db) if da > 0 and db > 0 else 0.0
+
+
+def embed_prompt(prompt, cmd):
+    """Run the user-configured embedder (text on stdin → JSON float vector on
+    stdout). Absent/broken → None (rerank then no-ops)."""
+    if not cmd:
+        return None
+    try:
+        import subprocess
+        r = subprocess.run(cmd, shell=True, input=prompt[:4000].encode("utf-8"),
+                           capture_output=True, timeout=3)
+        vec = json.loads(r.stdout.decode("utf-8"))
+        return vec if isinstance(vec, list) else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def semantic_rerank(candidates, prompt, embedder_cmd):
+    """OPT-IN. Blend cosine(prompt, cached lesson vector) into each candidate's
+    rank as a light multiplier. Requires BOTH a write-time-cached vector store
+    (state/embeddings.json = {lesson_id: [floats]}) AND an embedder command; any
+    missing piece or error returns candidates UNCHANGED, so the zero-dependency
+    default remains byte-for-byte identical and imports nothing new."""
+    try:
+        with open(os.path.join(STATE_DIR, "embeddings.json"), encoding="utf-8") as fh:
+            vecs = json.load(fh)
+        if not isinstance(vecs, dict) or not vecs:
+            return candidates
+        pv = embed_prompt(prompt, embedder_cmd)
+        if not pv:
+            return candidates
+        out = []
+        for rank, s, lesson in candidates:
+            lv = vecs.get(lesson["id"])
+            if isinstance(lv, list):
+                rank = rank * (1.0 + 0.5 * max(0.0, _cosine(pv, lv)))
+            out.append((rank, s, lesson))
+        return out
+    except Exception:  # noqa: BLE001 — a bad vector (TypeError in _cosine) must
+        return candidates  # degrade to lexical rank, never abort the injection
 
 
 # ---------------------------------------------------------------------------
@@ -388,6 +535,7 @@ def main():
     # back to defaults, never disable the feature silently.
     max_inject, min_score, min_distinct = MAX_INJECTIONS, MIN_SCORE, MIN_DISTINCT
     enabled = True
+    semantic_on, embedder_cmd = False, ""
     if project_root:
         try:
             with open(
@@ -403,6 +551,8 @@ def main():
             max_inject = to_int(cfg.get("maxInjections"), MAX_INJECTIONS)
             min_score = to_int(cfg.get("minScore"), MIN_SCORE)
             min_distinct = to_int(cfg.get("minDistinct"), MIN_DISTINCT)
+            semantic_on = bool(cfg.get("semanticRerank", False))
+            embedder_cmd = str(cfg.get("embedderCmd", "") or "")
         except (OSError, ValueError, TypeError, AttributeError):
             pass
     if not enabled:
@@ -416,10 +566,20 @@ def main():
     lessons = load_lessons(dirs)
     if not lessons:
         return
+    idf = compute_idf(lessons)   # corpus rarity weights (mean≈1)
 
     prompt_terms = tokens(prompt[:MAX_PROMPT_CHARS])
     if len(prompt_terms) < 2:
         return
+    # Terse ANAPHORIC follow-ups ("why?", "fix that", "same error") refer back to
+    # a pasted error/log; widen recall with the transcript tail. Gated on both a
+    # deictic marker AND a short prompt so self-contained prompts never pull stale
+    # context (precision guard).
+    if len(prompt) < 120 and _DEICTIC.search(prompt):
+        try:
+            prompt_terms = prompt_terms | recent_context_terms(data.get("transcript_path"))
+        except Exception:  # noqa: BLE001 — never let context-reading break injection
+            pass
 
     now = time.time()
     already = load_injected(session_id)
@@ -430,7 +590,7 @@ def main():
             continue
         if suppressed_as_harmful(lesson["meta"]):
             continue
-        s = score_lesson(lesson, prompt_terms, now)
+        s = score_lesson(lesson, prompt_terms, now, idf)
         if (
             s["weighted_sum"] >= min_score
             and s["distinct"] >= min_distinct
@@ -441,6 +601,8 @@ def main():
     if not candidates:
         return
 
+    if semantic_on:   # opt-in; no-ops unless vectors + embedder are configured
+        candidates = semantic_rerank(candidates, prompt, embedder_cmd)
     candidates.sort(key=lambda c: -c[0])
     chosen = candidates[:max_inject]
 
