@@ -24,7 +24,7 @@ import sys
 import time
 
 # ---------------------------------------------------------------------------
-# Tunables (project .claude/flywheel.json can override the first three)
+# Tunables (project .claude/flywheel.json can override the injection ones)
 # ---------------------------------------------------------------------------
 MAX_INJECTIONS = 2
 MIN_SCORE = 6          # minimum weighted match sum
@@ -35,8 +35,20 @@ MAX_LESSON_BYTES = 32_768
 MAX_PROMPT_CHARS = 6000
 RECENCY_HALF_LIFE_DAYS = 180
 RECENCY_FLOOR = 0.4
+LOG_MAX_BYTES = 512_000       # trim audit logs beyond this
+LOG_KEEP_LINES = 1500
 STATE_DIR = os.path.expanduser("~/.claude/flywheel/state")
 GLOBAL_LESSONS_DIR = os.path.expanduser("~/.claude/flywheel/lessons")
+
+# Evidence-quality multiplier: lessons backed by real outcome signals outrank
+# self-judged ones (the design's "signal honesty" rule).
+SIGNAL_WEIGHT = {
+    "user-correction": 1.0,
+    "ci-failure": 1.0,
+    "reverted-pr": 1.0,
+    "test-fail": 1.0,
+    "self-judged": 0.7,
+}
 
 STOPWORDS = frozenset(
     """a an the and or but if then else when where how why what which who is are
@@ -94,23 +106,50 @@ def find_project_root(cwd: str):
     return None
 
 
+def _clean_value(raw: str, strip_comment: bool) -> str:
+    """Strip surrounding quotes; strip ' # comment' only for unquoted values
+    (a '#' inside a quoted value — e.g. an issue number — is content)."""
+    raw = raw.strip()
+    was_quoted = raw[:1] in "\"'"
+    value = raw.strip("\"'").strip()
+    if strip_comment and not was_quoted:
+        value = re.split(r"\s+#", value)[0].strip()
+    return value
+
+
 def parse_frontmatter(text: str):
-    """Parse a simple `key: value` YAML-ish frontmatter block. Returns (meta, body)."""
+    """Parse a simple `key: value` YAML-ish frontmatter block.
+
+    Multi-line values are supported: an INDENTED line is treated as a
+    continuation of the previous key's value and appended (this matches how
+    the lesson schema wraps long `keywords:` lists). Top-level keys are never
+    indented, so a continuation line containing a colon (e.g. wrapped prose)
+    cannot clobber another key. Returns (meta, body).
+    """
     if not text.startswith("---"):
         return {}, text
     end = text.find("\n---", 3)
     if end == -1:
         return {}, text
     meta = {}
+    last_key = None
     for line in text[3:end].splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or ":" not in line:
+        if not line.strip():
             continue
-        key, _, value = line.partition(":")
-        value = value.strip().strip("\"'")
-        # strip trailing inline comments: `signal: user-correction  # note`
-        value = re.split(r"\s+#", value)[0].strip()
-        meta[key.strip()] = value
+        indented = line[:1] in (" ", "\t")
+        stripped = line.strip()
+        if indented and last_key is not None:
+            # Continuation of the previous value (wrapped list/prose).
+            fragment = _clean_value(stripped, strip_comment=False)
+            if fragment:
+                meta[last_key] = (meta.get(last_key, "") + " " + fragment).strip()
+            continue
+        if stripped.startswith("#") or ":" not in stripped:
+            continue
+        key, _, value = stripped.partition(":")
+        key = key.strip()
+        meta[key] = _clean_value(value, strip_comment=True)
+        last_key = key
     return meta, text[end + 4 :]
 
 
@@ -121,17 +160,38 @@ def to_int(value, default=0):
         return default
 
 
+_STRATEGY_HEAD = re.compile(r"^(?:\*{1,2}|#{1,6}\s*)?\s*strategy\b", re.IGNORECASE)
+_INCIDENT_HEAD = re.compile(r"^(?:\*{1,2}|#{1,6}\s*)?\s*incident\b", re.IGNORECASE)
+
+
 def extract_strategy(body: str) -> str:
-    """Pull the **Strategy ...** block (up to the **Incident** section)."""
-    match = re.search(
-        r"\*\*Strategy[^\n]*\n?(.*?)(?=\n\s*\*\*Incident|\Z)", body, re.DOTALL
-    )
-    text = (match.group(1) if match else body).strip()
-    # Re-attach the strategy heading's own trailing sentence if the bold header
-    # held content on the same line: "**Strategy:** text..."
-    header = re.search(r"\*\*Strategy[^*]*\*\*:?\s*([^\n]*)", body)
-    if header and header.group(1).strip() and header.group(1).strip() not in text:
-        text = header.group(1).strip() + "\n" + text
+    """Pull the Strategy block (bold / heading / plain forms, case-insensitive).
+    Never includes the Incident section; falls back to the first paragraph
+    (pre-Incident) rather than ever returning the whole body."""
+    out, in_strategy = [], False
+    for line in body.splitlines():
+        stripped = line.strip()
+        if not in_strategy:
+            if _STRATEGY_HEAD.match(stripped):
+                in_strategy = True
+                # Keep same-line content after the header's colon.
+                _, sep, rest = stripped.partition(":")
+                rest = rest.strip().lstrip("*").strip()
+                if sep and rest:
+                    out.append(rest)
+            continue
+        if _INCIDENT_HEAD.match(stripped):
+            break
+        out.append(line)
+    text = "\n".join(out).strip()
+    if not text:
+        # Fallback: first paragraph, with any Incident section cut away first.
+        pre_incident = []
+        for line in body.splitlines():
+            if _INCIDENT_HEAD.match(line.strip()):
+                break
+            pre_incident.append(line)
+        text = "\n".join(pre_incident).strip().split("\n\n")[0].strip()
     if len(text) > MAX_STRATEGY_CHARS:
         text = text[:MAX_STRATEGY_CHARS].rsplit(" ", 1)[0] + " …"
     return text.strip()
@@ -193,7 +253,7 @@ def lesson_terms(lesson):
 
     add(tokens(meta.get("keywords", "")), 3)
     add(tokens(meta.get("symptom", "")), 3)
-    add(tokens(meta.get("id", "") .replace("-", " ")), 2)
+    add(tokens(meta.get("id", "").replace("-", " ")), 2)
     add(tokens(meta.get("class", "").replace("-", " ")), 2)
     add(tokens(extract_strategy(body)), 1)
     return weights
@@ -214,15 +274,25 @@ def score_lesson(lesson, prompt_terms, now):
             - 2 * to_int(meta.get("harmful")),
         )
     )
+    signal = (meta.get("signal") or "self-judged").strip().lower()
+    signal_mult = SIGNAL_WEIGHT.get(signal, 0.85)
     age_days = max(0.0, (now - lesson["mtime"]) / 86400.0)
     recency = max(RECENCY_FLOOR, 0.5 ** (age_days / RECENCY_HALF_LIFE_DAYS))
     return {
         "weighted_sum": weighted_sum,
         "distinct": distinct,
         "strong": strong,
-        "rank": weighted_sum * importance * recency,
+        "rank": weighted_sum * importance * signal_mult * recency,
         "matched": sorted(matched),
     }
+
+
+def suppressed_as_harmful(meta) -> bool:
+    """A lesson repeatedly marked harmful stops injecting until /consolidate
+    rehabilitates or retires it — 'harmful' must be able to bite."""
+    harmful = to_int(meta.get("harmful"))
+    helpful = to_int(meta.get("helpful"))
+    return harmful >= 2 and harmful > helpful
 
 
 # ---------------------------------------------------------------------------
@@ -251,14 +321,30 @@ def save_injected(session_id, injected):
         pass
 
 
+def trim_log(path, max_bytes=LOG_MAX_BYTES, keep=LOG_KEEP_LINES):
+    """Bound an append-only jsonl log. Atomic replace so concurrent appends
+    lose at most a few lines rather than corrupting the file."""
+    try:
+        if os.path.getsize(path) <= max_bytes:
+            return
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            lines = fh.readlines()
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.writelines(lines[-keep:])
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
 def log_injections(records):
     try:
         os.makedirs(STATE_DIR, exist_ok=True)
-        with open(
-            os.path.join(STATE_DIR, "injections.jsonl"), "a", encoding="utf-8"
-        ) as fh:
+        path = os.path.join(STATE_DIR, "injections.jsonl")
+        with open(path, "a", encoding="utf-8") as fh:
             for rec in records:
                 fh.write(json.dumps(rec) + "\n")
+        trim_log(path)
     except OSError:
         pass
 
@@ -292,13 +378,14 @@ def main():
     cwd = data.get("cwd") or os.getcwd()
     session_id = data.get("session_id") or "unknown"
 
-    # Skip: trivial prompts, slash commands, and pure paste-continuations.
+    # Skip: trivial prompts and slash commands.
     if len(prompt) < 12 or prompt.startswith("/"):
         return
 
     project_root = find_project_root(cwd)
 
-    # Per-project config overrides.
+    # Per-project config overrides. A malformed/unexpected config must fall
+    # back to defaults, never disable the feature silently.
     max_inject, min_score, min_distinct = MAX_INJECTIONS, MIN_SCORE, MIN_DISTINCT
     enabled = True
     if project_root:
@@ -308,12 +395,15 @@ def main():
                 "r",
                 encoding="utf-8",
             ) as fh:
-                cfg = json.load(fh).get("injection", {})
+                raw_cfg = json.load(fh)
+            cfg = raw_cfg.get("injection", {}) if isinstance(raw_cfg, dict) else {}
+            if not isinstance(cfg, dict):
+                cfg = {}
             enabled = bool(cfg.get("enabled", True))
             max_inject = to_int(cfg.get("maxInjections"), MAX_INJECTIONS)
             min_score = to_int(cfg.get("minScore"), MIN_SCORE)
             min_distinct = to_int(cfg.get("minDistinct"), MIN_DISTINCT)
-        except (OSError, ValueError):
+        except (OSError, ValueError, TypeError, AttributeError):
             pass
     if not enabled:
         return
@@ -337,6 +427,8 @@ def main():
     candidates = []
     for lesson in lessons.values():
         if lesson["id"] in already:
+            continue
+        if suppressed_as_harmful(lesson["meta"]):
             continue
         s = score_lesson(lesson, prompt_terms, now)
         if (

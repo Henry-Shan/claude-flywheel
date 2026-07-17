@@ -1,5 +1,10 @@
 # The Learning Flywheel — a self-improving Claude system for Labshare
 
+> **Provenance:** this design was authored inside its first consumer project (a lab-management
+> monorepo referred to as "labshare"); examples, paths, and the case-study incidents reference
+> that environment. The generic implementation lives in this repo. **v0.1 implementation notes**
+> (deliberate deviations from this design) are at the end of this document.
+
 **Problem statement (Henry's words, sharpened):** every session's mistakes evaporate. There is
 no system that (1) records where Claude went wrong — didn't check the database first, made a
 false assumption, picked the wrong dependency — (2) turns those into skills/rules, (3) lets the
@@ -11,7 +16,7 @@ instead of re-deriving (or worse, guessing).
 
 | Layer | Status today |
 |---|---|
-| Capture (transcripts) | ✅ **Done, free.** 71 sessions / 342MB JSONL in `~/.claude/projects/-Users-haotianshan-labshare/` |
+| Capture (transcripts) | ✅ **Done, free.** 71 sessions / 342MB JSONL in `~/.claude/projects/<munged-project-path>/` |
 | Memory store | ✅ 24 curated files + `MEMORY.md` index, auto-recalled at SessionStart |
 | Semantic retrieval | ✅ `labshare-memory` MCP — hybrid BM25+dense, 1,568 vectors, callable mid-session |
 | Skills + dynamic selection | ✅ Skill descriptions ARE a dynamic selector (Claude matches them per-turn) |
@@ -377,3 +382,24 @@ extract lessons, a ladder to put each lesson where it belongs (lesson → memory
 rule → slice), and three retrieval channels — sharpened skill triggers, habitual semantic
 search, and a prompt-time injection hook — so the next session meets the mistake **before**
 making it.*
+
+
+---
+
+## v0.1 implementation notes (deviations from this design)
+
+1. **Per-session auto-mining is queued, not auto-triggered.** The SessionEnd hook records the
+   outcome and queues the session; `/flywheel:learn --queued` does the mining. Auto-spawning a
+   headless miner at session end is deferred (cost-bounding, recursion safety) — roadmap:
+   opt-in `mining.autoMine` flag.
+2. **L4 slice registry is not shipped in v0.1.** The design stands; it lands as a
+   `/flywheel:init` scaffold + CI checker in a later version.
+3. **helpful/harmful counters are bumped by the miner reading real session evidence**
+   (corrections, outcomes) — not by a live self-assessment. The injection hook logs every
+   injection (`state/injections.jsonl`) and the miner cross-references those logs against what
+   actually happened in the mined session; `state/events.jsonl` records every counter
+   operation so `/flywheel:consolidate` can compute the metrics.
+4. **The `signal` field IS enforced at retrieval**: self-judged lessons carry a 0.7 rank
+   multiplier vs 1.0 for user-correction/CI/reverted-PR-backed lessons, and repeatedly-harmful
+   lessons (`harmful ≥ 2 && harmful > helpful`) are suppressed from injection entirely until
+   consolidation rehabilitates or retires them.

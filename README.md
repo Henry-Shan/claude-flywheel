@@ -133,15 +133,21 @@ and every machine/CI runner inherits them on pull. Global-tier lessons follow
 {
   "version": 1,
   "injection": {
-    "enabled": true,      // kill-switch for the prompt-time injection
-    "maxInjections": 2,   // max lessons injected per prompt
-    "minScore": 6,        // weighted keyword-match threshold
-    "minDistinct": 2      // distinct matched terms required
+    "enabled": true,
+    "maxInjections": 2,
+    "minScore": 6,
+    "minDistinct": 2
   }
 }
 ```
 
-State (injection audit log, session outcomes, mining queue) lives in
+- `enabled` — kill-switch for prompt-time injection in this project
+- `maxInjections` — max lessons injected per prompt
+- `minScore` — weighted keyword-match threshold (higher = quieter)
+- `minDistinct` — distinct matched terms required
+
+(Keep it valid JSON — no comments. A malformed config falls back to defaults.)
+State (injection audit log, mining queue, event log for metrics) lives in
 `~/.claude/flywheel/state/` — never in your repo.
 
 ## Design principles (the short version)
@@ -158,6 +164,19 @@ State (injection audit log, session outcomes, mining queue) lives in
   counters; a human gates every promotion into always-on context.
 - **If it isn't measured, it's decorative** — `/flywheel:consolidate` reports
   repeat-mistake rate; if that doesn't fall, fix the loop or kill it.
+
+## Roadmap (deliberate v0.1 scope cuts)
+
+- **Auto-mining at session end** — today the SessionEnd hook only *queues*
+  sessions (`/flywheel:learn --queued` processes them). Spawning a headless
+  miner automatically is deferred until it can be cost-bounded; it will land
+  as an opt-in `mining.autoMine` config flag.
+- **Slice registry** — a machine-checkable per-feature component map
+  (`.claude/slices/*.yaml`) that grounds cross-layer questions; described in
+  [docs/DESIGN.md](docs/DESIGN.md) §L4.
+- **Embedding-based retrieval** — injection matching is deliberately lexical
+  (keywords are the API); an optional embedding index can layer on later
+  without changing the lesson format.
 
 ## Uninstall
 

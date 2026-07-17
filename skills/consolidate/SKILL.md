@@ -27,10 +27,12 @@ lesson store healthy and decide (with the human) what graduates upward.
 ## Step 1 — Inventory
 
 Read both tiers: `<project>/.claude/lessons/*.md` and
-`~/.claude/flywheel/lessons/*.md`. Parse frontmatter. Read the state files:
-`~/.claude/flywheel/state/injections.jsonl` (what was injected, when) and
-`sessions.jsonl` (session outcomes) since the last consolidation (track the
-cutoff in `~/.claude/flywheel/state/last-consolidate`).
+`~/.claude/flywheel/lessons/*.md`. Parse frontmatter. Read the state files in
+`~/.claude/flywheel/state/`: `injections.jsonl` (what was injected, when, into
+which session), `events.jsonl` (the miner's add/bump operations — the source
+for repeat-mistake and counter metrics), and `sessions.jsonl` (session
+outcomes) since the last consolidation (track the cutoff in
+`~/.claude/flywheel/state/last-consolidate`).
 
 ## Step 2 — Hygiene (automatic, report each op)
 
@@ -52,7 +54,7 @@ Work the ladder — propose, don't impose:
 
 | candidate | condition | action on approval |
 |---|---|---|
-| **→ skill** | `tier: skill-candidate`, or procedural + `occurrences ≥ 2` | Scaffold a skill (project `.claude/skills/<id>/SKILL.md`, or `~/.claude/skills/` if global): symptom-first description for auto-triggering, runbook body distilled from the lesson + incidents. Lesson gets `status: promoted` + pointer. |
+| **→ skill** | procedural AND **evidenced to work when applied**: `helpful ≥ 1`, or ≥2 independent sessions where following the strategy demonstrably resolved the issue. Recurrence alone (`occurrences`) is NOT evidence — a mistake seen twice proves the problem recurs, not that the runbook works. | Scaffold a skill (project `.claude/skills/<id>/SKILL.md`, or `~/.claude/skills/` if global): symptom-first description for auto-triggering, runbook body distilled from the lesson + incidents. Lesson gets `status: promoted` + pointer. |
 | **→ CLAUDE.md rule** | a *class* of lesson keeps recurring across ids (e.g. three `skipped-ground-truth` lessons) | Propose ONE short behavioral line for the project's CLAUDE.md capturing the class ("verify against the live store before writing queries"). Show exact wording; append only after approval. Budget: keep learned rules ≤ ~10 lines total — if at budget, propose a swap, not an add. |
 | **→ memory** | a durable *fact* (not procedure) the harness should recall | Write it to the project's auto-memory directory following its existing format, and add the one-line index entry. |
 

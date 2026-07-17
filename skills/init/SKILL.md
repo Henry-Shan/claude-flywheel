@@ -36,22 +36,31 @@ Write `.claude/flywheel.json` **only if it doesn't exist**:
 }
 ```
 
-## Step 2 — Verify the injection hook actually works
+## Step 2 — Verify the hooks actually work
 
-Self-test the hook exactly as the harness would invoke it. Find the plugin
-root (the directory containing `hooks/inject.py` — for an installed plugin,
-under `~/.claude/plugins/cache/claude-flywheel/`; when developing, the repo
-itself), then:
+Self-test both hook scripts exactly as the harness would invoke them. Find the
+plugin root (the directory containing `hooks/inject.py` — for an installed
+plugin it is under `~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/`,
+e.g. `~/.claude/plugins/cache/claude-flywheel/flywheel/*/`; when developing,
+the checked-out repo itself). Then, using a UNIQUE session id each run (the
+per-session dedupe makes probes one-shot per session id):
 
 ```bash
-echo '{"prompt":"flywheel init self-test — this arbitrary prompt should inject nothing","cwd":"'$PWD'","session_id":"init-selftest"}' \
-  | python3 <plugin-root>/hooks/inject.py
+SID="init-selftest-$(date +%s)"
+printf '{"prompt":"flywheel init self-test arbitrary nonsense prompt","cwd":"%s","session_id":"%s"}' "$PWD" "$SID" \
+  | python3 "<plugin-root>/hooks/inject.py"; echo "inject exit=$?"
+printf '{"session_id":"%s","transcript_path":"","cwd":"%s"}' "$SID" "$PWD" \
+  | python3 "<plugin-root>/hooks/outcome_log.py"; echo "outcome exit=$?"
 ```
 
-Empty output = correct (no lessons match a nonsense prompt; the script ran
-cleanly). A Python traceback or non-zero exit = broken — report it. If the
-project already has lessons, also run a positive probe using one lesson's
-keywords and confirm JSON with `additionalContext` comes back.
+Success criteria: **both exit codes are 0**, inject.py prints nothing for the
+nonsense prompt, and no traceback appears. (Empty output alone is not enough —
+check the exit code, since the scripts are fail-silent by design.) If the
+project already has lessons, also run ONE positive probe using a lesson's
+keywords (fresh `$SID`) and confirm JSON with `additionalContext` comes back.
+Note: probes write a few benign records under `~/.claude/flywheel/state/`
+(`injected-init-selftest-*.json`, a sessions.jsonl line) — harmless, and the
+state cleaner ages them out.
 
 ## Step 3 — Offer the habit line (ask first)
 

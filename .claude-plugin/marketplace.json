@@ -1,8 +1,7 @@
 {
   "name": "claude-flywheel",
   "owner": {
-    "name": "Henry Shan",
-    "url": "https://github.com/Henry-Shan"
+    "name": "Henry Shan"
   },
   "plugins": [
     {

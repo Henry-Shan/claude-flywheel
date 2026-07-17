@@ -2,12 +2,13 @@
 name: learn
 description: >
   Mine Claude Code session transcripts into durable, strategy-level lessons.
-  Use when: the user says "/learn", "learn from this", "that was wrong —
-  remember it", "why did you keep getting that wrong", after a debugging
-  session that involved user corrections or a reverted approach, or to process
-  the pending mining queue. Arguments: no args = mine the current/most recent
-  session; "--queued" = process the pending-mine queue; "--since 7d" = mine the
-  last N days of sessions; a session id or transcript path = mine that one.
+  Use when: the user says "/flywheel:learn", "learn from this", "that was
+  wrong — remember it", "why did you keep getting that wrong", after a
+  debugging session that involved user corrections or a reverted approach, or
+  to process the pending mining queue. Arguments: no args = mine the most
+  recent completed session for this project; "--queued" = process the
+  pending-mine queue; "--since 7d" = mine the last N days of sessions; a
+  session id or transcript path = mine that one.
 argument-hint: "[--queued | --since 7d | <session-id-or-transcript-path>]"
 ---
 
@@ -27,7 +28,10 @@ known mistake *before* re-making it.
 3. **Recurrence beats novelty.** Before writing a new lesson, search existing
    ones; if the same root cause exists, bump `occurrences` and append evidence
    instead of creating a duplicate.
-4. **Never touch CLAUDE.md.** Promotion to always-on rules is
+4. **Classify only after reading the exchange.** Grep hits masquerade: user
+   phrasing that *looks* like a correction ("did you see X?") is often just
+   navigation. Never write a lesson from an index hit you haven't read.
+5. **Never touch CLAUDE.md.** Promotion to always-on rules is
    `/flywheel:consolidate`'s job, human-gated.
 
 ## Step 1 — Resolve which transcript(s) to mine
@@ -37,10 +41,11 @@ Transcripts live at `~/.claude/projects/<munged-cwd>/*.jsonl`, where
 `/Users/foo/bar` → `-Users-foo-bar`). Each file is one session (JSONL of
 messages). Resolve by argument:
 
-- **No args:** the most recently modified transcript for the current project
-  (`ls -t ~/.claude/projects/<munged-cwd>/*.jsonl | head -2` — the top file is
-  usually THIS session; prefer the most recent *completed* one, or mine this
-  session's earlier portion).
+- **No args:** the most recent **completed** session for the current project
+  (`ls -t ~/.claude/projects/<munged-cwd>/*.jsonl | head -3`). Prefer a
+  finished session over the live one — mining is a cold read; grading the
+  session you are currently in is biased. Mine the live session's transcript
+  only when the user explicitly says "learn from THIS".
 - **`--queued`:** read `~/.claude/flywheel/state/pending-mine.jsonl`; mine each
   entry with `"mined": false`, oldest first, then rewrite those entries with
   `"mined": true`.
@@ -48,22 +53,49 @@ messages). Resolve by argument:
 - **Explicit arg:** treat as a path if it exists, else glob
   `~/.claude/projects/*/<arg>*.jsonl`.
 
-## Step 2 — Read the transcript EFFICIENTLY (they can be tens of MB)
+## Step 2 — Read the transcript EFFICIENTLY (field-tested recipe)
 
-Do NOT read a transcript end-to-end. Target the signal:
+Real transcripts are large (1–50 MB) and single lines can exceed 100 KB (tool
+results, skill listings). **Never** read a transcript end-to-end, and **never**
+dump raw line windows with `sed` — project fields instead.
+
+Know the format first:
+- Every message is one JSON line. `"type":"user"` lines are BOTH human
+  messages AND tool results. The discriminator: a **human message** has
+  `type=="user"`, no `toolUseResult` field, and its `.message.content` is a
+  plain string or contains `{"type":"text"}` blocks. Tool results carry
+  `tool_use_id` items.
+- Tool errors are encoded exactly as `"is_error":true` (no space).
+
+Hotspot indexing (in descending signal-to-noise, validated on real data):
 
 ```bash
-wc -c <transcript>                     # size check first
-# Find correction/failure hotspots (line numbers):
-grep -n -i -E '"type":"user"' <t> | wc -l          # session shape
-grep -n -i -E "(actually|that's wrong|not what|still (can't|cannot|doesn)|you broke|revert|undo|instead of|no[,.] )" <t> | head -40
-grep -n -E '"is_error":true|error|failed|FAIL' <t> | head -40
+wc -c <t>                                              # size sanity check
+grep -n "Request interrupted by user" <t>              # HIGHEST signal: the user stopped you
+grep -n '"is_error":true' <t> | head -30               # tool rejections/failures (exact, no space)
+grep -n -E "Failed to load resource|Internal Server Error|blocked by CORS|ERROR \[|Traceback" <t> | head -30
+                                                       # pasted error text = a real runtime failure the user hit
 ```
 
-Then read windows (~20–60 lines) around hotspots with `sed -n 'START,ENDp'`.
-Reconstruct each incident: what was claimed/attempted → what contradicted it →
-what finally worked. User messages immediately after an assistant action are
-the highest-value lines: they contain the correction.
+Then extract HUMAN messages only (with line numbers) and scan those — this is
+where corrections live:
+
+```bash
+jq -rc 'select(.type=="user" and (has("toolUseResult")|not))
+        | [input_line_number,
+           (.message.content | if type=="string" then . else ([.[]? | select(.type=="text") | .text] | join(" ")) end)]
+        | @tsv' <t> | head -80
+```
+
+Apply correction-phrase matching ("actually", "that's wrong", "still broken",
+"instead", "no,") **only to this extracted human text** — on raw JSONL those
+words match injected skill listings and schemas on nearly every line.
+
+For each hotspot, reconstruct the incident by reading the surrounding
+*messages* (via the jq projection around those line numbers), not raw lines:
+what was claimed/attempted → what contradicted it → what finally worked. The
+human message immediately after an assistant action is the highest-value text:
+it contains the correction.
 
 ## Step 3 — Critique against the rubric
 
@@ -71,9 +103,10 @@ the highest-value lines: they contain the correction.
 |---|---|
 | `unverified-assumption` | a claim later contradicted by a check ("assumed X covers Y") |
 | `skipped-ground-truth` | wrote code against a DB/API/env without checking the live thing first |
+| `shipped-untested` | reported "done" on typecheck/build green; the USER was the first runtime tester and hit the failure |
 | `wrong-path` | an approach or dependency chosen, then reversed later |
 | `missed-prime-suspect` | the true cause was visible/mentioned early but pursued last |
-| `rework-loop` | the user corrected the same thing ≥2 times |
+| `rework-loop` | the user corrected the same thing ≥2 times (verify by reading — see prime directive 4) |
 | `missing-context` | the user had to explain something durable mid-task |
 | `win` | a move that cracked the problem fast and is repeatable |
 
@@ -91,10 +124,14 @@ For each candidate lesson, search BOTH tiers:
 grep -ril "<distinctive terms>" <project>/.claude/lessons/ ~/.claude/flywheel/lessons/ 2>/dev/null
 ```
 
-Also search any project memory index if present. If an existing lesson shares
-the root cause: bump `occurrences`, append the new session to `sessions:`,
-enrich `keywords:` with any new trigger phrasing, and (if the new incident
-adds a nuance) extend the Strategy. Do NOT create a near-duplicate.
+If the project keeps other memory/architecture notes (e.g. an auto-memory
+directory with a MEMORY.md index, or docs like ARCHITECTURE_NOTES.md), check
+those too before writing a lesson that duplicates recorded knowledge.
+
+If an existing lesson shares the root cause: bump `occurrences` (+1 per mined
+session, not per repetition inside one session), append the new session to
+`sessions:`, enrich `keywords:` with any new trigger phrasing, and (if the new
+incident adds a nuance) extend the Strategy. Do NOT create a near-duplicate.
 
 ## Step 5 — Write the lesson(s)
 
@@ -116,13 +153,14 @@ symptom: "<how this problem announces itself, in the words a user would type>"
 keywords: "<8–15 comma-separated trigger terms/synonyms — include the words a
   frustrated user would actually use: 'not showing', 'flaky', 'sometimes',
   'still broken'. These drive automatic injection; be generous with synonyms,
-  but avoid terms so generic they'd fire on unrelated work>"
+  but avoid terms so generic they'd fire on unrelated work. Wrapped lines are
+  fine — indent continuations.>"
 signal: user-correction | ci-failure | reverted-pr | test-fail | self-judged
 occurrences: 1
 helpful: 0
 harmful: 0
-sessions: [<session-id or transcript basename>/<approx location>]
-tier: lesson            # lesson | skill-candidate — /consolidate promotes
+sessions: [<transcript-basename>/L<start>-L<end>]
+tier: lesson            # the miner always writes "lesson"; /consolidate promotes
 status: active
 ---
 **Strategy (retrieved/injected):** <the GENERALIZED, transferable decision
@@ -139,15 +177,26 @@ Schema rules that matter:
   only helps on identical repeats; a strategy transfers.
 - **keywords are the retrieval surface.** The injection hook is lexical
   (stdlib, no embeddings) — rich synonyms are what make dynamic recall work.
-- **helpful/harmful counters:** if the transcript shows a previously-injected
-  lesson was followed and helped, bump its `helpful`; if one misled, bump
-  `harmful` (check `~/.claude/flywheel/state/injections.jsonl` for what was
-  injected into the mined session).
+- **`sessions:` evidence format** is `<transcript-basename>/L<start>-L<end>`
+  (JSONL line range of the incident).
+- **helpful/harmful counters:** check
+  `~/.claude/flywheel/state/injections.jsonl` (one JSON object per injection,
+  keyed by `"session"` and `"lesson"`) for lessons injected into the mined
+  session. If the transcript shows an injected lesson was followed and helped,
+  bump its `helpful`; if it misled, bump `harmful`.
 
-## Step 6 — Report
+## Step 6 — Record events + report
+
+For every lesson written or updated, append one line to
+`~/.claude/flywheel/state/events.jsonl` — this is the metrics source
+`/flywheel:consolidate` reads:
+
+```json
+{"ts": <unix>, "op": "add|bump-occurrence|bump-helpful|bump-harmful", "lesson": "<id>", "class": "<class>", "scope": "<scope>", "session": "<transcript-basename>"}
+```
 
 End with a compact summary: lessons written (id, class, scope, signal),
-lessons bumped (id, occurrences), lessons skipped as trivia, and — if any
-lesson looks procedural and recurring — flag it as a `/flywheel:consolidate`
-promotion candidate. If mining `--queued`, mark processed queue entries
-`"mined": true`.
+lessons bumped (id, new occurrences), candidates you deliberately skipped as
+trivia or disconfirmed on reading, and — if any lesson looks procedural and
+recurring — flag it as a `/flywheel:consolidate` promotion candidate. If
+mining `--queued`, mark processed queue entries `"mined": true`.

@@ -39,14 +39,18 @@ def queued_session_ids():
         return set()
 
 
-def trim_queue():
-    """Keep the queue bounded — oldest entries fall off."""
+def trim_file(path, max_lines):
+    """Keep an append-only file bounded — oldest entries fall off. Uses an
+    atomic replace so a concurrent writer can't observe a torn file (at worst
+    a few concurrent appends are lost, never corrupted)."""
     try:
-        with open(MINE_QUEUE, "r", encoding="utf-8") as fh:
+        with open(path, "r", encoding="utf-8") as fh:
             lines = fh.readlines()
-        if len(lines) > MAX_QUEUE_LINES:
-            with open(MINE_QUEUE, "w", encoding="utf-8") as fh:
-                fh.writelines(lines[-MAX_QUEUE_LINES:])
+        if len(lines) > max_lines:
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                fh.writelines(lines[-max_lines:])
+            os.replace(tmp, path)
     except OSError:
         pass
 
@@ -72,6 +76,7 @@ def main():
         "reason": reason,
     }
     append_line(SESSIONS_LOG, record)
+    trim_file(SESSIONS_LOG, 3000)
 
     # Queue for mining if the transcript is substantial and not already queued.
     try:
@@ -81,7 +86,7 @@ def main():
     if size >= MIN_TRANSCRIPT_BYTES and session_id not in queued_session_ids():
         record = dict(record, transcript_bytes=size, mined=False)
         append_line(MINE_QUEUE, record)
-        trim_queue()
+        trim_file(MINE_QUEUE, MAX_QUEUE_LINES)
 
 
 if __name__ == "__main__":
