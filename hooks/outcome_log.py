@@ -10,10 +10,12 @@ Fail-silent by design: a hook must never break or stall session teardown.
 
 import json
 import os
+import subprocess
 import sys
 import time
 
 STATE_DIR = os.path.expanduser("~/.claude/flywheel/state")
+GLOBAL_CFG = os.path.expanduser("~/.claude/flywheel/config.json")
 SESSIONS_LOG = os.path.join(STATE_DIR, "sessions.jsonl")
 MINE_QUEUE = os.path.join(STATE_DIR, "pending-mine.jsonl")
 MIN_TRANSCRIPT_BYTES = 20_000  # skip trivial sessions — nothing to mine
@@ -55,7 +57,40 @@ def trim_file(path, max_lines):
         pass
 
 
+def automation_enabled():
+    try:
+        with open(GLOBAL_CFG, encoding="utf-8") as fh:
+            raw = json.load(fh)
+        auto = raw.get("automation", {}) if isinstance(raw, dict) else {}
+        return bool(isinstance(auto, dict) and auto.get("enabled"))
+    except (OSError, ValueError):
+        return False
+
+
+def spawn_autopilot():
+    """Fire-and-forget the detached autopilot runner. Returns instantly so the
+    SessionEnd hook never blocks teardown; the runner does the slow work."""
+    autopilot = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts", "autopilot.py")
+    autopilot = os.path.abspath(autopilot)
+    if not os.path.exists(autopilot):
+        return
+    try:
+        subprocess.Popen(
+            [sys.executable, autopilot],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError:
+        pass
+
+
 def main():
+    # Recursion guard: this session is itself a flywheel autopilot run — do not
+    # log it, queue it, or spawn further mining. (Belt-and-suspenders with the
+    # runner's own lock + debounce.)
+    if os.environ.get("FLYWHEEL_AUTOPILOT"):
+        return
+
     try:
         data = json.load(sys.stdin)
     except (ValueError, OSError):
@@ -87,6 +122,12 @@ def main():
         record = dict(record, transcript_bytes=size, mined=False)
         append_line(MINE_QUEUE, record)
         trim_file(MINE_QUEUE, MAX_QUEUE_LINES)
+
+    # If autopilot is enabled, kick the detached runner. It self-guards against
+    # recursion, concurrency, and rapid re-runs, so an unconditional nudge here
+    # is safe — the runner decides whether there's actually work to do.
+    if automation_enabled():
+        spawn_autopilot()
 
 
 if __name__ == "__main__":

@@ -181,12 +181,45 @@ State (injection audit log, mining queue, event log for metrics) lives in
 - **If it isn't measured, it's decorative** — `/flywheel:consolidate` reports
   repeat-mistake rate; if that doesn't fall, fix the loop or kill it.
 
-## Roadmap (deliberate v0.1 scope cuts)
+## Autopilot — run the whole loop automatically (opt-in)
 
-- **Auto-mining at session end** — today the SessionEnd hook only *queues*
-  sessions (`/flywheel:learn --queued` processes them). Spawning a headless
-  miner automatically is deferred until it can be cost-bounded; it will land
-  as an opt-in `mining.autoMine` config flag.
+By default you run `/flywheel:learn` and `/flywheel:consolidate` yourself.
+Turn on **autopilot** and the SessionEnd hook does it for you: after a session
+ends it fires a detached, headless `claude -p` run that drains the mining
+queue, and on a weekly cadence runs consolidation. Capture → mine → consolidate
+→ inject, with no human in the inner loop.
+
+Enable it in `~/.claude/flywheel/config.json`:
+
+```json
+{
+  "automation": {
+    "enabled": true,
+    "mineDebounceMinutes": 20,
+    "consolidateEveryDays": 7,
+    "runTimeoutSeconds": 900,
+    "permissionMode": "scoped",
+    "model": ""
+  }
+}
+```
+
+- **It spends tokens on its own** — each debounced mining run is a real (small,
+  headless) `claude` call. Set `"model"` to a cheaper model to reduce cost.
+- **`permissionMode`**: `scoped` (curated allow-list — safest) or `skip`
+  (`--dangerously-skip-permissions` — most reliable, bypasses all checks).
+- **Safe by construction**: mining sessions carry `FLYWHEEL_AUTOPILOT=1` so
+  they can't trigger more mining (recursion guard), a single-flight lock +
+  debounce cap runaway spend, and every run is timeout-bounded.
+- **Promotions stay human-gated**: auto-consolidation only does reversible
+  hygiene + metrics and writes promotion *candidates* to
+  `~/.claude/flywheel/state/promotion-candidates.md` for you — it never
+  auto-writes a skill or a CLAUDE.md rule.
+
+`/flywheel:status` shows whether autopilot is on and when it last ran.
+
+## Roadmap
+
 - **Slice registry** — a machine-checkable per-feature component map
   (`.claude/slices/*.yaml`) that grounds cross-layer questions; described in
   [docs/DESIGN.md](docs/DESIGN.md) §L4.

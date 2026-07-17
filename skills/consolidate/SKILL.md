@@ -24,6 +24,29 @@ lesson store healthy and decide (with the human) what graduates upward.
    it loads into every session; a bad rule poisons everything.
 3. `--dry-run`: report everything you *would* do, change nothing.
 
+### `--auto` mode (unattended, run by the autopilot)
+
+When invoked with `--auto` (headless, from `scripts/autopilot.py`), you are
+running with NO human present, so the "a human ratifies every promotion" rule
+means: **do the automatic hygiene and metrics, but perform ZERO promotions.**
+
+- **DO (safe, reversible):** dedupe/merge duplicate lessons, rescope
+  project↔global, retire lessons where `harmful > helpful` or long-dead
+  (status flip, never delete), fix counter integrity, and compute metrics.
+- **DO NOT:** create skills, write to CLAUDE.md, or otherwise move anything up
+  the ladder. There is no one to approve it, and auto-writing into always-on
+  context is exactly the failure the design forbids.
+- **Instead:** append every promotion candidate you *would* have proposed to
+  `~/.claude/flywheel/state/promotion-candidates.md` (one section per
+  candidate: lesson id, why it qualifies, the proposed skill/rule text). The
+  human reviews that file and runs an interactive `/flywheel:consolidate` to
+  approve. Also write the metrics report to
+  `~/.claude/flywheel/state/consolidate-report.md`.
+- Do not use AskUserQuestion in `--auto` mode (nothing can answer it).
+
+Interactive `/flywheel:consolidate` (no `--auto`) behaves as below — with the
+human gate live.
+
 ## Step 1 — Inventory
 
 Read both tiers: `<project>/.claude/lessons/*.md` and

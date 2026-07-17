@@ -30,9 +30,32 @@ HOME = os.path.expanduser("~")
 FLYWHEEL = os.path.join(HOME, ".claude", "flywheel")
 GLOBAL_LESSONS = os.path.join(FLYWHEEL, "lessons")
 STATE = os.path.join(FLYWHEEL, "state")
+CONFIG = os.path.join(FLYWHEEL, "config.json")
 OUT_HTML = os.path.join(FLYWHEEL, "dashboard.html")
 PLUGIN_CACHE = os.path.join(HOME, ".claude", "plugins", "cache", "claude-flywheel")
 DAY = 86400
+
+
+def autopilot_state():
+    """Read the autopilot config + last-run timestamps for the dashboard."""
+    enabled, mode = False, "—"
+    try:
+        with open(CONFIG, encoding="utf-8") as fh:
+            a = (json.load(fh) or {}).get("automation", {}) or {}
+        enabled = bool(a.get("enabled"))
+        mode = a.get("permissionMode", "scoped")
+    except (OSError, ValueError):
+        pass
+    def mt(name):
+        try:
+            return os.path.getmtime(os.path.join(STATE, name))
+        except OSError:
+            return 0
+    return {
+        "enabled": enabled, "mode": mode,
+        "last_mine": mt("last-automine"),
+        "last_consolidate": mt("last-autoconsolidate"),
+    }
 
 
 # --------------------------------------------------------------------------- IO
@@ -145,6 +168,15 @@ def health(lessons):
     checks.append(("python3", py_ok, f"{sys.version.split()[0]}"))
     checks.append(("Lessons loaded", len(lessons) > 0,
                    f"{len(lessons)} lesson(s) across tiers"))
+    ap = autopilot_state()
+    if ap["enabled"]:
+        last = ap["last_mine"]
+        det = "on (" + ap["mode"] + ") · last mine " + (
+            ago(last, time.time()) if last else "not yet")
+    else:
+        det = "off — mining/consolidate are manual (/flywheel:learn, /flywheel:consolidate)"
+    checks.append(("Autopilot", True, det))
+    # Autopilot is informational, not a health failure either way.
     ok = all(c[1] for c in checks)
     return ok, checks
 
