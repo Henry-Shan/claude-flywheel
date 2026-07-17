@@ -8,6 +8,7 @@
       "name": "flywheel",
       "source": "./",
       "description": "Self-improving memory: mines transcripts into lessons, injects them when a matching problem appears, promotes recurring lessons into skills and rules.",
+      "version": "0.2.0",
       "category": "productivity"
     }
   ]

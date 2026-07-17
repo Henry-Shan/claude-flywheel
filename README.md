@@ -77,10 +77,26 @@ When you want control:
 
 | command | what it does |
 |---|---|
+| `/flywheel:status` | **is it working?** health check + a visual dashboard (lessons, injection timeline, metrics) |
 | `/flywheel:learn` | mine the latest session ("that was wrong — remember it") |
 | `/flywheel:learn --queued` | process everything the SessionEnd hook queued |
 | `/flywheel:learn --since 7d` | mine the last week of sessions |
 | `/flywheel:consolidate` | weekly: dedupe, merge, promote, retire + metrics report |
+
+### The dashboard
+
+`/flywheel:status` writes a self-contained HTML dashboard to
+`~/.claude/flywheel/dashboard.html` (open it in any browser) showing:
+
+- **Health** — plugin installed? hooks runnable? lessons loaded?
+- **Injection timeline** — every time a lesson fired, when, and which prompt
+  terms matched it (this is the proof it's working)
+- **Lesson catalog** — every lesson with scope, class, signal, and its
+  occurrences / helpful / harmful counters
+- **Mining metrics** — sessions queued vs mined, recurring-mistake count
+
+A freshly-installed flywheel shows *0 injections* — that's expected; the hooks
+fill the timeline as you work and hit problems that match a stored lesson.
 
 ## What a lesson looks like
 
