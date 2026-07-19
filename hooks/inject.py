@@ -576,6 +576,21 @@ def trim_log(path, max_bytes=LOG_MAX_BYTES, keep=LOG_KEEP_LINES):
         pass
 
 
+def log_prompt(session_id, prompt, now):
+    """Log every REAL user message (it already passed the meta/scripted/SDK
+    gates) — sessions solve several tasks, and the dashboard's activity feed
+    should show them all, not only the messages that fired a lesson."""
+    try:
+        os.makedirs(STATE_DIR, exist_ok=True)
+        path = os.path.join(STATE_DIR, "prompts.jsonl")
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"ts": int(now), "session": session_id,
+                                 "prompt": prompt[:180]}) + "\n")
+        trim_log(path)
+    except OSError:
+        pass
+
+
 def log_injections(records):
     try:
         os.makedirs(STATE_DIR, exist_ok=True)
@@ -628,6 +643,10 @@ def main():
         return
     if is_sdk_session(data.get("transcript_path")):
         return
+
+    # This is a real human message about real work — record it for the activity
+    # feed regardless of whether any lesson ends up matching below.
+    log_prompt(session_id, prompt, time.time())
 
     project_root = find_project_root(cwd)
 

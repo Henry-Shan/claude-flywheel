@@ -369,6 +369,20 @@ def collect(project_root):
                            "matched": (r.get("matched") or [])[:8]})
         g["prompt"] = g["prompt"] or r.get("prompt", "")
     logs.extend(turns.values())
+
+    # EVERY real user message (prompts.jsonl, logged by the hook post-filter) —
+    # sessions solve several tasks; show them all, not only lesson-firing turns.
+    inj_keys = {(r.get("session"), (r.get("prompt") or "")[:80]) for r in inj}
+    seen_msg = set()
+    for r in read_jsonl("prompts.jsonl"):
+        ptxt = r.get("prompt") or ""
+        if not ptxt or _SCRIPTED_RE.match(ptxt):
+            continue
+        key = (r.get("session"), ptxt[:80])
+        if key in inj_keys or key in seen_msg:   # already shown as a firing turn
+            continue
+        seen_msg.add(key)
+        logs.append({"kind": "message", "ts": r.get("ts", 0), "prompt": ptxt})
     for ev in pulls:
         o = ev.get("outcome")
         if o in usage:
@@ -646,6 +660,8 @@ function render(d){
       if(r.kind==='learned'){
         lb.innerHTML+=`<tr><td class=mono>${when(r.ts)}</td><td><span class="chip learned">${r.op==='add'?'lesson written':'lesson updated'}</span></td>`
           +`<td><b>${esc(r.lesson)}</b></td><td class=dim>Claude ${r.op==='add'?'wrote this lesson from a mined session':'saw it recur and bumped it'}</td></tr>`;
+      } else if(r.kind==='message'){
+        lb.innerHTML+=`<tr><td class=mono>${when(r.ts)}</td><td class=dim>message</td><td class=dim>—</td><td>${p}</td></tr>`;
       } else if(r.kind==='pulled'){
         lb.innerHTML+=`<tr><td class=mono>${when(r.ts)}</td><td><span class="chip pulled">pulled</span> <span class="chip ${esc(r.outcome)}">${esc(r.outcome)}</span></td>`
           +`<td><b>${esc(r.lesson)}</b></td><td>${p}</td></tr>`;
