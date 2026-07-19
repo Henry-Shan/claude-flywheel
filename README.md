@@ -86,10 +86,21 @@ to seed lessons from your existing transcripts.
 ## Daily use
 
 Mostly: **nothing**. Work normally. Transcripts record automatically; the
-SessionEnd hook queues substantial sessions for mining; when you type a prompt
-whose symptoms match a stored lesson, the strategy is injected automatically
-(max 2, strict threshold, at most once per lesson per session — silence over
-noise).
+SessionEnd hook queues substantial sessions for mining. Lessons reach a session
+through two channels:
+
+- **Pull (primary):** at SessionStart a tiny **lesson index** (one symptom line
+  per lesson, like Claude Code's own skill listing) is injected. When mid-task
+  work starts matching a symptom, Claude Reads that lesson file and applies its
+  Strategy — retrieval happens at the moment of need, judged by the model in
+  full context, not by keyword overlap on your opening words. `/flywheel:recall`
+  is the explicit version of the same move. Every pull is tracked and its
+  outcome scored — a pulled-then-helped lesson is the strongest promotion
+  evidence the flywheel collects.
+- **Push (fast path):** when your prompt *itself* describes a lesson's symptom
+  ("the dropdown is flaky and sometimes doesn't show"), the strategy is injected
+  immediately (max 2, curated-keywords-only matching, generic tokens excluded,
+  meta/session-management prompts never match — silence over noise).
 
 When you want control:
 

@@ -139,16 +139,33 @@ def transcript_for(session_id, project):
     return None
 
 
+def _lesson_id_for(path):
+    """Resolve a lesson file path to its id (frontmatter id, else filename stem)."""
+    stem = os.path.splitext(os.path.basename(path))[0]
+    try:
+        head = open(path, encoding="utf-8", errors="replace").read(2048)
+        for ln in head.splitlines():
+            s = ln.strip()
+            if s.startswith("id:"):
+                return s.partition(":")[2].strip().strip("\"'") or stem
+    except OSError:
+        pass
+    return stem
+
+
 def load_events(transcript_path):
-    """Stream a transcript into [(ts, is_human, text, has_interrupt)]. Returns
-    None if unreadable (so the caller can defer rather than mis-judge)."""
+    """Stream a transcript into (events, pulls):
+      events = [(ts, is_human, text, has_interrupt)]  — for outcome classification
+      pulls  = [(ts, lesson_id, lesson_path)]         — Read tool calls on lesson
+               files (the PULL channel: the model deliberately retrieved a lesson)
+    Returns (None, []) if unreadable, so the caller defers rather than mis-judges."""
     if not transcript_path or not os.path.exists(transcript_path):
-        return None
-    events = []
+        return None, []
+    events, pulls, pulled_ids = [], [], set()
     try:
         fh = open(transcript_path, encoding="utf-8", errors="replace")
     except OSError:
-        return None
+        return None, []
     with fh:
         for line in fh:
             line = line.strip()
@@ -159,11 +176,26 @@ def load_events(transcript_path):
                 o = json.loads(line)
             except ValueError:
                 continue
+            if not isinstance(o, dict):
+                continue
             ts = _epoch(o.get("timestamp"))
+            # pull detection: assistant Read of a lesson .md
+            if o.get("type") == "assistant" and not o.get("isMeta"):
+                for it in ((o.get("message") or {}).get("content") or []):
+                    if not (isinstance(it, dict) and it.get("type") == "tool_use"
+                            and it.get("name") == "Read"):
+                        continue
+                    fp = str((it.get("input") or {}).get("file_path") or "")
+                    if fp.endswith(".md") and (
+                            "/.claude/lessons/" in fp or "/flywheel/lessons/" in fp):
+                        lid = _lesson_id_for(fp)
+                        if lid not in pulled_ids:   # first pull per lesson counts
+                            pulled_ids.add(lid)
+                            pulls.append((ts, lid, fp))
             text = M._human_text(o)
             if text is not None or has_int:
                 events.append((ts, text is not None, text or "", has_int))
-    return events
+    return events, pulls
 
 
 # ------------------------------------------------------------------- classify
@@ -313,22 +345,45 @@ def _attributed_pairs():
     return seen
 
 
+def _keyword_terms(path):
+    """Topical-gate terms for a pulled lesson: its curated keywords + symptom."""
+    try:
+        head = open(path, encoding="utf-8", errors="replace").read(4096)
+    except OSError:
+        return set()
+    fields = []
+    for ln in head.splitlines():
+        s = ln.strip()
+        if s.startswith(("keywords:", "symptom:")):
+            fields.append(s.partition(":")[2])
+    return set(M._terms(" ".join(fields)))
+
+
 def attribute_session(session_id, transcript_path=None):
-    """Attribute every not-yet-scored injection for one session. Returns a list
-    of (lesson, outcome) applied this call.
+    """Attribute every not-yet-scored lesson USE in one session — both channels:
+      pull (the model deliberately Read a lesson file; strongest evidence) and
+      push (inject.py matched the prompt). Pulls are processed first, so when a
+      lesson was both pushed and pulled the pull-basis attribution wins the
+      (session, lesson)-once dedupe. Returns [(lesson, outcome), ...].
 
     The expensive, side-effect-free work (reading the transcript, classifying)
     runs OUTSIDE the lock; only the mutating tail (re-check seen, bump counters,
     append events) runs UNDER the cross-process lock, with `seen` re-read inside
     the lock so a concurrent run can't double-attribute the same pair."""
     injections = [r for r in _read_jsonl(INJECTIONS) if r.get("session") == session_id]
-    if not injections:
-        return []
     project = next((r.get("project") for r in injections if r.get("project")), "") or ""
     tpath = transcript_path or transcript_for(session_id, project)
-    events = load_events(tpath)  # read the transcript ONCE for all injections
+    events, pulls = load_events(tpath)  # read the transcript ONCE
+    if not injections and not pulls:
+        return []
 
     pending = []
+    for ts, lid, fp in pulls:           # pulls FIRST — they win the dedupe
+        outcome, basis = classify(events, ts, _keyword_terms(fp))
+        if basis == "no-transcript":
+            continue
+        # a pull knows its exact file — no directory search needed
+        pending.append((fp, lid, outcome, "pulled; " + basis, "pull"))
     for rec in injections:
         lid = rec.get("lesson")
         if not lid:
@@ -336,21 +391,22 @@ def attribute_session(session_id, transcript_path=None):
         outcome, basis = classify(events, rec.get("ts", 0), set(rec.get("matched") or []))
         if basis == "no-transcript":
             continue  # can't judge yet — leave unattributed for a later run
-        pending.append((rec, lid, outcome, basis))
+        pending.append((None, lid, outcome, basis, "push"))
     if not pending:
         return []
 
     applied = []
     with _lock():
         seen = _attributed_pairs()   # fresh read UNDER the lock
-        for rec, lid, outcome, basis in pending:
+        for known_path, lid, outcome, basis, mode in pending:
             if (session_id, lid) in seen:
                 continue
             ev = {"ts": int(time.time()), "op": "attribute", "auto": True,
-                  "session": session_id, "lesson": lid,
+                  "session": session_id, "lesson": lid, "mode": mode,
                   "outcome": outcome, "basis": basis}
             if outcome in ("helpful", "harmful"):
-                f = find_lesson_file(lid, rec.get("project") or "")
+                f = (known_path if known_path and os.path.exists(known_path)
+                     else find_lesson_file(lid, project))
                 if f:
                     nv = bump_counter(f, outcome)
                     if nv is not None:

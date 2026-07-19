@@ -337,10 +337,14 @@ def collect(project_root):
     # collect "Claude wrote/updated a lesson" events for the Logs feed.
     events = read_jsonl("events.jsonl")
     outcome = {}
+    pulls = []
     for ev in events:
         if ev.get("op") == "attribute":
             outcome[(ev.get("session"), ev.get("lesson"))] = ev.get("outcome")
-    usage = {"injected": len(inj), "helpful": 0, "harmful": 0, "neutral": 0}
+            if ev.get("mode") == "pull":
+                pulls.append(ev)
+    # "used" = pushed injections + deliberate pulls (Claude Read the lesson file)
+    usage = {"injected": len(inj) + len(pulls), "helpful": 0, "harmful": 0, "neutral": 0}
     logs = []
     for r in inj:
         o = outcome.get((r.get("session"), r.get("lesson")))
@@ -349,6 +353,13 @@ def collect(project_root):
         logs.append({"kind": "fired", "ts": r.get("ts", 0), "lesson": r.get("lesson"),
                      "tier": r.get("tier", ""), "outcome": o or "pending",
                      "matched": (r.get("matched") or [])[:8]})
+    for ev in pulls:
+        o = ev.get("outcome")
+        if o in usage:
+            usage[o] += 1
+        logs.append({"kind": "pulled", "ts": ev.get("ts", 0),
+                     "lesson": ev.get("lesson"), "outcome": o or "pending"})
+        fired.setdefault(ev.get("lesson"), []).append(ev.get("ts", 0))  # pulls count as "used"
     learned = [{"kind": "learned", "ts": ev.get("ts", 0),
                 "lesson": ev.get("lesson"), "op": ev.get("op"),
                 "cls": ev.get("class", ""), "scope": ev.get("scope", "")}
@@ -480,6 +491,7 @@ a{color:var(--blue)}
 .chip.neutral{color:var(--dim);background:var(--line)}
 .chip.pending{color:var(--dim);background:transparent;box-shadow:inset 0 0 0 1px var(--line)}
 .chip.learned{color:var(--blue);background:color-mix(in srgb,var(--blue) 14%,transparent)}
+.chip.pulled{color:var(--blue);background:transparent;box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--blue) 45%,transparent)}
 .lgrid{display:grid;gap:10px}
 </style></head><body><div class=wrap>
 <div class=top><h1>flywheel</h1></div>
@@ -519,7 +531,7 @@ function render(d){
   const us=document.getElementById('usage');us.innerHTML='';
   const tb=E('table');const b=E('tbody');
   [['Lessons',d.lessons.length],
-   ['Times a lesson was injected ("used")',u.injected],
+   ['Times a lesson was used (injected, or pulled by Claude)',u.injected],
    ['Proven helpful (on-topic success ack after firing)',u.helpful],
    ['Proven harmful (user interrupted / corrected on-topic after firing)',u.harmful],
    ['Neutral — fired, no outcome signal either way',u.neutral]
@@ -535,6 +547,9 @@ function render(d){
       if(r.kind==='learned'){
         lb.innerHTML+=`<tr><td class=mono>${when(r.ts)}</td><td><span class="chip learned">${r.op==='add'?'lesson written':'lesson updated'}</span></td>`
           +`<td><b>${esc(r.lesson)}</b></td><td class=dim>Claude ${r.op==='add'?'wrote this lesson':'bumped it (recurred)'}${r.cls?' · '+esc(r.cls):''}</td></tr>`;
+      } else if(r.kind==='pulled'){
+        lb.innerHTML+=`<tr><td class=mono>${when(r.ts)}</td><td><span class="chip pulled">pulled</span></td>`
+          +`<td><b>${esc(r.lesson)}</b></td><td class=dim>Claude chose to read this lesson · outcome: <span class="chip ${esc(r.outcome)}">${esc(r.outcome)}</span></td></tr>`;
       } else {
         lb.innerHTML+=`<tr><td class=mono>${when(r.ts)}</td><td><span class="chip ${esc(r.outcome)}">${esc(r.outcome)}</span></td>`
           +`<td><b>${esc(r.lesson)}</b></td><td class=terms>matched: ${esc((r.matched||[]).join(', '))}</td></tr>`;

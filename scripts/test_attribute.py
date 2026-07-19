@@ -104,6 +104,50 @@ def main():
     check("no duplicate helpful key", t3.count("helpful:"), 1)
     check("no duplicate harmful key", t3.count("harmful:"), 1)
 
+    print("\npull channel (Read of a lesson file = deliberate use):")
+    pd = tempfile.mkdtemp()
+    pst, ples = os.path.join(pd, "state"), os.path.join(pd, ".claude", "lessons")
+    os.makedirs(pst); os.makedirs(ples)
+    A.STATE, A.GLOBAL_LESSONS = pst, os.path.join(pd, "glessons")
+    os.makedirs(A.GLOBAL_LESSONS)
+    A.INJECTIONS = os.path.join(pst, "injections.jsonl")
+    A.EVENTS = os.path.join(pst, "events.jsonl")
+    A.ATTRIBUTED = os.path.join(pst, "attributed.jsonl")
+    A.LOCKFILE = os.path.join(pst, "attribution.lock")
+    lp = os.path.join(ples, "pulled-lesson.md")
+    open(lp, "w").write("---\nid: pulled-lesson\nkeywords: \"schema, migration\"\n"
+                        "symptom: \"500 on first use\"\nhelpful: 0\nharmful: 0\n---\nbody\n")
+    tp = os.path.join(pd, "s-pull.jsonl")
+    with open(tp, "w") as fh:
+        fh.write(json.dumps({"timestamp": "2020-01-01T00:00:10Z", "type": "assistant",
+            "message": {"content": [{"type": "tool_use", "name": "Read",
+                                     "input": {"file_path": lp}}]}}) + "\n")
+        fh.write(json.dumps({"timestamp": "2020-01-01T00:01:00Z", "type": "user",
+            "message": {"content": "the schema migration works now, fixed it"}}) + "\n")
+    tev, pulls = A.load_events(tp)
+    check("pull detected from Read tool_use", [p[1] for p in pulls], ["pulled-lesson"])
+    applied = A.attribute_session("s-pull", tp)
+    check("pull-only session attributed", applied, [("pulled-lesson", "helpful")])
+    check("pull bumped helpful in file", "helpful: 1" in open(lp).read(), True)
+    evs = [json.loads(l) for l in open(A.EVENTS)]
+    check("event carries mode=pull + pulled basis",
+          evs[0]["mode"] == "pull" and evs[0]["basis"].startswith("pulled;"), True)
+    # push+pull same session: pull wins the (session,lesson)-once dedupe
+    with open(A.INJECTIONS, "w") as fh:
+        fh.write(json.dumps({"session": "s-both", "lesson": "pulled-lesson", "ts": 5,
+                             "matched": ["schema"], "project": pd}) + "\n")
+    tb = os.path.join(pd, "s-both.jsonl")
+    with open(tb, "w") as fh:
+        fh.write(json.dumps({"timestamp": "2020-01-01T00:00:10Z", "type": "assistant",
+            "message": {"content": [{"type": "tool_use", "name": "Read",
+                                     "input": {"file_path": lp}}]}}) + "\n")
+        fh.write(json.dumps({"timestamp": "2020-01-01T00:01:00Z", "type": "user",
+            "message": {"content": "ok next task"}}) + "\n")
+    A.attribute_session("s-both", tb)
+    both = [json.loads(l) for l in open(A.EVENTS) if json.loads(l)["session"] == "s-both"]
+    check("both-channels session -> ONE event, mode=pull wins",
+          len(both) == 1 and both[0]["mode"] == "pull", True)
+
     print("\nconcurrency: N parallel attributions of the SAME global lesson lose no counts:")
     import re as _re
     import threading

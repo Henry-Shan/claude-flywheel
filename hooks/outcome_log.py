@@ -10,7 +10,6 @@ Fail-silent by design: a hook must never break or stall session teardown.
 
 import json
 import os
-import re
 import subprocess
 import sys
 import time
@@ -99,16 +98,6 @@ def spawn_autopilot():
         _spawn_detached([sys.executable, s])
 
 
-def had_injection(session_id):
-    """True iff inject.py wrote a per-session marker for this id — i.e. at least
-    one lesson was actually injected. Lets us skip the attribution spawn (and its
-    full injections.jsonl scan) for the vast majority of sessions that got none."""
-    if not session_id:
-        return False
-    safe = re.sub(r"[^A-Za-z0-9_-]", "_", session_id)[:80]
-    return os.path.exists(os.path.join(STATE_DIR, f"injected-{safe}.json"))
-
-
 def spawn_attribution(session_id, transcript_path):
     """Deterministic injection-outcome attribution for the just-ended session:
     correlate this session's injections with its transcript and bump the matched
@@ -162,10 +151,11 @@ def main():
     # Always refresh dashboard metrics for this session (cheap, local, no LLM).
     spawn_metrics(cwd)
 
-    # Deterministically attribute this session's injections → helpful/harmful
-    # signal (code-only; no LLM). Only for a REAL session id that actually
-    # received an injection — skips the sentinel and the no-injection majority.
-    if raw_session_id and had_injection(raw_session_id):
+    # Deterministically attribute this session's lesson uses → helpful/harmful
+    # signal (code-only; no LLM). Covers BOTH channels: pushed injections and
+    # pulled lesson Reads — a pull-only session leaves no injection marker, so
+    # this must run for every real session (it's cheap, detached, idempotent).
+    if raw_session_id:
         spawn_attribution(raw_session_id, transcript_path)
 
     # If autopilot is enabled, kick the detached runner. It self-guards against

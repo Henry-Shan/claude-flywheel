@@ -255,6 +255,7 @@ def load_lessons(dirs):
                 "meta": meta,
                 "body": body,
                 "mtime": mtime,
+                "path": path,   # the pull channel needs a Read-able location
             }
     return lessons
 

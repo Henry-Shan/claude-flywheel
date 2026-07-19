@@ -70,6 +70,18 @@ outcomes) since the last consolidation (track the cutoff in
   Retirement is an UPDATE (status flip), not deletion — history stays.
 - **Counter integrity:** cross-check injections.jsonl — flag lessons injected
   often but never marked helpful (description/keywords may be misfiring).
+- **Keyword self-tuning (the retrieval surface learns from outcomes):** join
+  `injections.jsonl` (`matched` terms per firing) with `events.jsonl`
+  (`op: attribute` outcomes, keyed by session+lesson). For each lesson:
+  - a keyword that appears in `matched` across ≥5 firings whose outcomes are
+    ONLY harmful/neutral — and never helpful and never in a `mode: pull`
+    session — is a misfiring trigger: REMOVE it from `keywords:` (delta op,
+    report it).
+  - when a lesson was PULLED (`mode: pull`) and the outcome was helpful, look at
+    the words the user/agent actually used for the problem in that session and
+    ADD the 1–3 strongest symptom-shaped terms missing from `keywords:`.
+  Never touch the Strategy text in this step, and never edit `helpful:`/
+  `harmful:` (owned by the attributor).
 
 ## Step 3 — Promotion candidates (human-gated, one question each)
 
