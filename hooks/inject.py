@@ -743,9 +743,13 @@ def main():
         "Apply these learned strategies if relevant (ignore if not; they are "
         "advisory, mined from real past sessions):\n\n" + "\n\n".join(blocks)
     )
+    injected_ids = [a["lesson"] for a in audit]   # only what actually landed
     print(
         json.dumps(
             {
+                # visible one-liner in the UI at the moment of injection, so the
+                # user can SEE the flywheel working (and notice a misfire early)
+                "systemMessage": "🎯 flywheel · lesson injected: " + ", ".join(injected_ids),
                 "hookSpecificOutput": {
                     "hookEventName": "UserPromptSubmit",
                     "additionalContext": context,
