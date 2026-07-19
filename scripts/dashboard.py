@@ -398,7 +398,11 @@ def collect(project_root):
             "harmful": sum(L["harmful"] for L in lessons),
         },
         "usage": usage,
-        "sessions": _session_stats(metrics, K),
+        "sessions": _session_stats(
+            metrics, K,
+            ratings=read_jsonl("ratings.jsonl"),
+            used_sessions={r.get("session") for r in inj}
+                          | {ev.get("session") for ev in pulls}),
         "logs": logs,
         "kpis": K,
         "injections": sorted(inj, key=lambda r: -r.get("ts", 0))[:50],
@@ -413,14 +417,30 @@ def _count(items, key):
     return out
 
 
-def _session_stats(metrics, K):
+def _session_stats(metrics, K, ratings=None, used_sessions=None):
     """Plain-language rollup of the structural session metrics (metrics.py):
     how many real sessions are measured, how much back-and-forth they take, and
-    how rough they are — plus the weekly friction trend for the bar strip."""
+    how rough they are — plus the weekly friction trend, and the GROUND-TRUTH
+    metric: human 1-5 session ratings (/flywheel:rate), including the honest
+    causal cut (rating lift on lesson-using sessions, gated on n≥5 per side)."""
     real = [m for m in metrics
             if not m.get("resumed") and (m.get("human_turns") or 0) >= 1
             and (m.get("started") or 0) > 0]
     smooth = sum(1 for m in real if (m.get("friction") or 0) == 0)
+
+    # latest rating per session wins (re-rating is allowed)
+    by_sid = {}
+    for r in (ratings or []):
+        v = to_int(r.get("rating"))
+        if 1 <= v <= 5:
+            by_sid[r.get("session_id") or f"~{r.get('ts')}"] = v
+    vals = list(by_sid.values())
+    used = used_sessions or set()
+    with_l = [v for sid, v in by_sid.items() if sid in used]
+    without = [v for sid, v in by_sid.items() if sid not in used]
+    lift = (round(sum(with_l) / len(with_l) - sum(without) / len(without), 1)
+            if len(with_l) >= 5 and len(without) >= 5 else None)
+
     return {
         "measured": len(real),
         "median_rounds": K["median_rounds"],
@@ -428,6 +448,11 @@ def _session_stats(metrics, K):
         "smooth_pct": round(100 * smooth / len(real)) if real else 0,
         "corrections": sum(m.get("corrections", 0) for m in real),
         "interruptions": sum(m.get("interruptions", 0) for m in real),
+        "rating_avg": (round(sum(vals) / len(vals), 1) if vals else None),
+        "rating_n": len(vals),
+        "rating_lift": lift,           # avg(rated, lesson used) − avg(rated, not)
+        "rating_with_n": len(with_l),
+        "rating_without_n": len(without),
         "trend": K["friction_trend"],   # [{weeks_ago, friction, n}] oldest→newest
     }
 
@@ -570,12 +595,17 @@ function render(d){
     const grid=E('div','grid g6');
     const stat=(v,l,sub)=>{const c=E('div','card stat');c.append(E('div','v',esc(v)),E('div','l',esc(l)));if(sub)c.append(E('div','s',esc(sub)));return c};
     grid.append(
+      stat(s.rating_n?('★ '+s.rating_avg):'—','session rating',
+           s.rating_n?(s.rating_n+' rated — the ground-truth metric'):'none yet — /flywheel:rate (1–5) after a session'),
       stat(s.measured,'sessions measured','real working sessions, auto-tracked'),
       stat(s.median_rounds==null?'—':s.median_rounds,'median rounds','your messages per session — fewer = resolved faster'),
       stat(s.median_friction==null?'—':s.median_friction,'median friction','corrections + interruptions + errors — lower = smoother'),
       stat(s.smooth_pct+'%','smooth sessions','ended with zero corrections, interruptions, or errors'),
       stat(s.corrections,'total corrections','times you had to say "no, that\'s wrong"'),
       stat(s.interruptions,'total interruptions','times you hit stop mid-answer'));
+    if(s.rating_lift!=null)
+      grid.append(stat((s.rating_lift>0?'+':'')+s.rating_lift,'rating lift with lessons',
+        'avg ★ of rated sessions that used a lesson vs not ('+s.rating_with_n+' vs '+s.rating_without_n+')'));
     S.append(grid);
     if((s.trend||[]).length>1){
       const mx=Math.max(...s.trend.map(w=>w.friction||0),1);
