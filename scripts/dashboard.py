@@ -321,12 +321,20 @@ def kpis(lessons, metrics, injections, now):
     }
 
 
+# Scripted persona prompts ("You are Echo, …") = headless cron jobs. v0.7.1
+# stops NEW injections into them; this display-side filter also hides any
+# stragglers logged by still-running pre-0.7.1 sessions, and keeps them out of
+# the usage counts (they were never legitimate uses).
+_SCRIPTED_RE = re.compile(r"^\s*[Yy]ou are (an? )?[A-Z][\w-]*\s*[,:—]")
+
+
 # --------------------------------------------------------------------- collect
 def collect(project_root):
     now = time.time()
     lessons = load_lessons(project_root)
     ok, checks = health(lessons)
-    inj = read_jsonl("injections.jsonl")
+    inj = [r for r in read_jsonl("injections.jsonl")
+           if not _SCRIPTED_RE.match(r.get("prompt") or "")]
     metrics = read_jsonl("session-metrics.jsonl")
     fired = {}
     for r in inj:
