@@ -571,6 +571,9 @@ a{color:var(--blue)}
 .chip.pulled{color:var(--blue);background:transparent;box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--blue) 45%,transparent)}
 .chip.injected{color:var(--acc);background:color-mix(in srgb,var(--acc) 14%,transparent)}
 .lgrid{display:grid;gap:10px}
+.filters{margin-left:10px}
+.fbtn{font-family:var(--mono);font-size:10.5px;letter-spacing:.04em;text-transform:uppercase;padding:3px 10px;border-radius:999px;border:1px solid var(--line);background:transparent;color:var(--dim);cursor:pointer}
+.fbtn.on{color:var(--acc);border-color:color-mix(in srgb,var(--acc) 45%,transparent);background:color-mix(in srgb,var(--acc) 10%,transparent)}
 .ptxt{color:var(--dim);font-size:12px;max-width:460px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .trendrow{display:flex;align-items:flex-end;gap:14px;margin-top:12px}
 .trendrow .spark{flex:1;height:44px}
@@ -579,8 +582,7 @@ a{color:var(--blue)}
 <div class=top><h1>flywheel</h1></div>
 <h2 id=lessonsHead>Lessons</h2><div class=lgrid id=catalog></div>
 <h2>Usage</h2><div class=wrapT id=usage></div>
-<h2>Sessions — how smooth is the work?</h2><div id=sess></div>
-<h2>Logs</h2><div class=wrapT id=timeline></div>
+<h2>Logs <span class=filters><button id=f-all class="fbtn on">all</button><button id=f-lessons class=fbtn>lessons only</button></span></h2><div class=wrapT id=timeline></div>
 <div class=foot><span id=mode></span></div>
 </div>
 <!--FLYWHEEL_DATA-->
@@ -589,7 +591,9 @@ const E=(t,c,h)=>{const e=document.createElement(t);if(c)e.className=c;if(h!=nul
 const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m]));
 const ago=ts=>{if(!ts)return'never';const d=Date.now()/1000-ts;if(d<90)return'just now';if(d<3600)return Math.floor(d/60)+'m ago';if(d<86400)return Math.floor(d/3600)+'h ago';return Math.floor(d/86400)+'d ago'};
 const when=ts=>ts?new Date(ts*1000).toLocaleString([], {month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}):'—';
+let LOGMODE='all';
 function render(d){
+  window.__last=d;
   const u=d.usage||{injected:0,helpful:0,harmful:0,neutral:0};
   // Lessons — the catalog, front and center
   document.getElementById('lessonsHead').textContent='Lessons — '+d.lessons.length;
@@ -620,39 +624,10 @@ function render(d){
    ['Neutral — fired, no outcome signal either way',u.neutral]
   ].forEach(([l,v])=>{b.innerHTML+=`<tr><td>${esc(l)}</td><td class=num><b>${v}</b></td></tr>`});
   tb.append(b);us.append(tb);
-  // Sessions — the structural metrics, in plain language
-  const s=d.sessions;
-  if(s){const S=document.getElementById('sess');S.innerHTML='';
-    const grid=E('div','grid g6');
-    const stat=(v,l,sub)=>{const c=E('div','card stat');c.append(E('div','v',esc(v)),E('div','l',esc(l)));if(sub)c.append(E('div','s',esc(sub)));return c};
-    grid.append(
-      stat(s.rating_n?('★ '+s.rating_avg):'—','session rating',
-           s.rating_n?(s.rating_n+' rated — the ground-truth metric'):'none yet — /flywheel:rate (1–5) after a session'),
-      stat(s.measured,'sessions measured','real working sessions, auto-tracked'),
-      stat(s.median_rounds==null?'—':s.median_rounds,'median rounds','your messages per session — fewer = resolved faster'),
-      stat(s.median_friction==null?'—':s.median_friction,'median friction','corrections + interruptions + errors — lower = smoother'),
-      stat(s.smooth_pct+'%','smooth sessions','ended with zero corrections, interruptions, or errors'),
-      stat(s.corrections,'total corrections','times you had to say "no, that\'s wrong"'),
-      stat(s.interruptions,'total interruptions','times you hit stop mid-answer'));
-    if(s.rating_lift!=null)
-      grid.append(stat((s.rating_lift>0?'+':'')+s.rating_lift,'rating lift with lessons',
-        'avg ★ of rated sessions that used a lesson vs not ('+s.rating_with_n+' vs '+s.rating_without_n+')'));
-    S.append(grid);
-    if((s.trend||[]).length>1){
-      const mx=Math.max(...s.trend.map(w=>w.friction||0),1);
-      const row=E('div','trendrow');
-      row.append(E('span','trendlab','friction by week →'));
-      const sp=E('div','spark');
-      s.trend.forEach(w=>{const b=E('i');b.style.height=Math.max(6,Math.round(100*(w.friction||0)/mx))+'%';
-        b.title=w.weeks_ago+' week(s) ago · median friction '+w.friction+' · '+w.n+' sessions';sp.append(b)});
-      row.append(sp,E('span','trendlab','now'));
-      const card=E('div','card');card.append(row,E('div','s','each bar = one week\'s median friction (hover for detail). Bars shrinking over time = the flywheel is working.'));
-      S.append(document.createElement('br'),card);
-    }
-  }
   // Logs — every use of a lesson, with what the user typed
   const tl=document.getElementById('timeline');
-  const logs=d.logs||[];
+  let logs=d.logs||[];
+  if(LOGMODE==='lessons') logs=logs.filter(r=>r.kind!=='message');
   if(logs.length){tl.innerHTML='';const lt=E('table');
     lt.innerHTML='<thead><tr><th>when</th><th>event</th><th>lesson</th><th>what you typed</th></tr></thead>';
     const lb=E('tbody');
@@ -679,6 +654,12 @@ function render(d){
 async function tick(){try{const r=await fetch('/api/data',{cache:'no-store'});render(await r.json());document.getElementById('mode').textContent='live · refreshes every 5s';}catch(e){document.getElementById('mode').textContent='reconnecting…';}}
 if(window.__DATA__){render(window.__DATA__);document.getElementById('mode').textContent='static snapshot — run /flywheel:serve for live';}
 else{tick();setInterval(tick,5000);}
+for(const [id,m] of [['f-all','all'],['f-lessons','lessons']]){
+  document.getElementById(id).onclick=()=>{LOGMODE=m;
+    document.getElementById('f-all').classList.toggle('on',m==='all');
+    document.getElementById('f-lessons').classList.toggle('on',m==='lessons');
+    if(window.__last)render(window.__last);};
+}
 </script></body></html>"""
 
 
