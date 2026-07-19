@@ -263,9 +263,26 @@ def load_lessons(dirs):
 # Matching
 # ---------------------------------------------------------------------------
 
+# Terms that appear in virtually ANY software prompt. They may exist in a
+# lesson's curated fields, but they must never COUNT as a match — audit of
+# injections.jsonl showed unrelated lessons ranking 14-19 purely on words like
+# "read/run/one/exact/user/data" (the flywheel's own mined lesson
+# `injection-misfires-on-headless-sdk-runs` diagnosed exactly this).
+_GENERIC = frozenset(
+    """one two read run write call click open close exact skip full part item
+    page list view time way sure even element user data state match rule assume
+    paste confirm every instead built green feed take give put keep know done
+    next also show need want change check press add remove""".split()
+)
+
+
 def lesson_terms(lesson):
-    """Build {term: weight} for a lesson. Higher weight = stronger trigger."""
-    meta, body = lesson["meta"], lesson["body"]
+    """Build {term: weight} for a lesson. Matching is restricted to the two
+    CURATED retrieval fields — keywords (the designed trigger vocabulary) and
+    symptom (user-language description). id/class/strategy-body terms are NOT
+    match candidates: body text is full of ordinary coding words and was the
+    main source of generic-token misfires."""
+    meta = lesson["meta"]
     weights = {}
 
     def add(term_set, weight):
@@ -273,11 +290,8 @@ def lesson_terms(lesson):
             if weights.get(t, 0) < weight:
                 weights[t] = weight
 
-    add(tokens(meta.get("keywords", "")), 3)
-    add(tokens(meta.get("symptom", "")), 3)
-    add(tokens(meta.get("id", "").replace("-", " ")), 2)
-    add(tokens(meta.get("class", "").replace("-", " ")), 2)
-    add(tokens(extract_strategy(body)), 1)
+    add(tokens(meta.get("symptom", "")), 2)
+    add(tokens(meta.get("keywords", "")), 3)   # keywords win on overlap
     return weights
 
 
@@ -304,7 +318,8 @@ def compute_idf(lessons):
 
 def score_lesson(lesson, prompt_terms, now, idf=None):
     weights = lesson_terms(lesson)
-    matched = {t: w for t, w in weights.items() if t in prompt_terms}
+    matched = {t: w for t, w in weights.items()
+               if t in prompt_terms and t not in _GENERIC}
     # Gate on the RAW matched-weight sum so MIN_SCORE stays exactly calibrated
     # regardless of corpus size; apply idf ONLY to the rank used for ordering, so
     # rare discriminators sort ahead without moving the firing threshold.
@@ -355,12 +370,53 @@ _DEICTIC = re.compile(
     re.IGNORECASE,
 )
 
+# Prompts that are session management / tool plumbing, NOT about the code (no
+# bug, no feature). Policy: never inject on these, so they also never pollute
+# the injection log or helpful/harmful attribution. The canonical harmful case:
+# "i connected to figma mcp, try again" pulled 4 unrelated lessons.
+_ACK = re.compile(
+    r"^(ok(ay)?|yes|yeah|yep|no|nope|thanks?( you)?|ty|nice|cool|great|perfect|"
+    r"good( job)?|continue|go ahead|proceed|do it|next|done|stop|wait|hold on|"
+    r"resume|keep going|carry on|sounds good|lgtm|approved?|try again|retry|again)"
+    r"\b[\s\S]{0,60}$",
+    re.IGNORECASE,
+)
+_META_HINT = re.compile(
+    r"\b(try again|retry|reconnect|connected( to)?|installed|restart(ed)?|"
+    r"reload(ed)?|logged? ?in|signed? ?in|log ?out|mcp|api key|token expired|"
+    r"permissions?|rename|switch model)\b",
+    re.IGNORECASE,
+)
+_CODE_HINT = re.compile(
+    r"\b(bug|error|fix|broken|breaks?|fail(s|ed|ing)?|crash|feature|implement|"
+    r"build|refactor|test|endpoint|component|function|button|screen|modal|"
+    r"query|database|schema|api|deploy|500|404|undefined|null|exception)\b",
+    re.IGNORECASE,
+)
 
-def recent_context_terms(transcript_path, max_bytes=16384, max_lines=8):
-    """Tokens from the TAIL of the session transcript — catches a stack trace or
-    error pasted in an earlier turn that a terse follow-up prompt ('why?', 'now
-    fix it') only refers to. Byte-bounded, last few records only, fully
-    fail-silent (any problem → empty set, so the default degrades to prompt-only)."""
+
+def looks_meta(prompt):
+    """True for prompts that aren't about the code itself. Short conversational
+    acks/continuations always skip; short tool/session-plumbing prompts skip
+    unless they also carry a concrete code signal (bug/feature vocabulary)."""
+    p = prompt.strip()
+    if _ACK.match(p):
+        return True
+    return len(p) < 120 and bool(_META_HINT.search(p)) and not _CODE_HINT.search(p)
+
+
+_SYNTH_PREFIXES = (
+    "[request interrupted", "<command-", "<local-command", "<task-notification",
+    "<system-reminder", "caveat: the messages below", "[system notification",
+)
+
+
+def recent_context_terms(transcript_path, max_bytes=16384, max_lines=40):
+    """Tokens from HUMAN turns in the transcript tail — catches an error the
+    user pasted earlier that a terse follow-up ('why?', 'fix that') refers to.
+    HUMAN TURNS ONLY: tool results / assistant output must never widen matching
+    (the figma-session pileup came from tokenizing tool output full of coding
+    vocabulary). Byte-bounded, fail-silent (any problem → empty set)."""
     if not transcript_path:
         return set()
     try:
@@ -379,16 +435,24 @@ def recent_context_terms(transcript_path, max_bytes=16384, max_lines=8):
             continue
         if not isinstance(o, dict):   # a valid-JSON scalar/array line isn't a turn
             continue
+        if o.get("type") != "user" or "toolUseResult" in o \
+                or o.get("isSidechain") or o.get("isMeta"):
+            continue
         content = (o.get("message") or {}).get("content")
         if isinstance(content, str):
             text = content
         elif isinstance(content, list):
+            if any(isinstance(it, dict) and it.get("type") == "tool_result"
+                   for it in content):
+                continue
             text = " ".join(str(it.get("text") or "") for it in content
-                            if isinstance(it, dict))
+                            if isinstance(it, dict) and it.get("type") == "text")
         else:
-            text = ""
-        if text:
-            out |= tokens(text[:4000])
+            continue
+        text = (text or "").strip()
+        if not text or text[:40].lower().startswith(_SYNTH_PREFIXES):
+            continue
+        out |= tokens(text[:4000])
     return out
 
 
@@ -525,8 +589,14 @@ def main():
     cwd = data.get("cwd") or os.getcwd()
     session_id = data.get("session_id") or "unknown"
 
-    # Skip: trivial prompts and slash commands.
+    # Skip: headless flywheel runs (scripted prompts — injections can't change
+    # their behavior and would pollute attribution), trivial prompts, slash
+    # commands, and meta/session-management prompts that aren't about the code.
+    if os.environ.get("FLYWHEEL_AUTOPILOT"):
+        return
     if len(prompt) < 12 or prompt.startswith("/"):
+        return
+    if looks_meta(prompt):
         return
 
     project_root = find_project_root(cwd)

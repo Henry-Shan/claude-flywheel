@@ -72,14 +72,35 @@ def main():
     check("self-contained prompt is NOT deictic",
           not I._DEICTIC.search("add a lab selector to the settings page"))
 
-    print("\ntranscript-tail context (terse follow-up refers back to a pasted error):")
+    print("\nmeta-prompt gate (non-code prompts never inject):")
+    check("'i connected to figma mcp, try again' is meta",
+          I.looks_meta("i connected to figma mcp, try again"))
+    check("'ok try again' is meta", I.looks_meta("ok try again"))
+    check("'restarted the server, still 500 error on save' is NOT meta (code signal)",
+          not I.looks_meta("restarted the server, still 500 error on save"))
+    check("real bug report is NOT meta",
+          not I.looks_meta("the delete button crashes the modal with an undefined error"))
+
+    print("\ngeneric tokens never count as matches:")
+    gl = {"g": L("g", "user, data, state, element", "")}
+    sg = I.score_lesson(gl["g"], I.tokens("the user sees data in this state element"),
+                        I.time.time(), None)
+    check("all-generic overlap scores zero", sg["weighted_sum"] == 0, sg)
+
+    print("\ntranscript-tail context (HUMAN turns only):")
     d = tempfile.mkdtemp()
     tp = os.path.join(d, "t.jsonl")
     with open(tp, "w") as fh:
-        fh.write(json.dumps({"message": {"content": "hey"}}) + "\n")
-        fh.write(json.dumps({"message": {"content": "PGRST204 schema cache error on write"}}) + "\n")
+        fh.write(json.dumps({"type": "user", "message": {"content": "hey"}}) + "\n")
+        fh.write(json.dumps({"type": "user", "message": {"content": "PGRST204 schema cache error on write"}}) + "\n")
+        fh.write(json.dumps({"type": "assistant", "message": {"content": [
+            {"type": "text", "text": "CORS preflight deadlock swallowed catch"}]}}) + "\n")
+        fh.write(json.dumps({"type": "user", "toolUseResult": {"x": 1}, "message": {"content": [
+            {"type": "tool_result", "content": "column does not exist 42703"}]}}) + "\n")
     ct = I.recent_context_terms(tp)
-    check("pulls 'schema' from the pasted error", "schema" in ct, ct)
+    check("pulls 'schema' from the HUMAN pasted error", "schema" in ct, ct)
+    check("assistant text NOT tokenized (no 'cors')", "cors" not in ct, ct)
+    check("tool output NOT tokenized (no 'column')", "column" not in ct, ct)
     check("missing transcript -> empty set (fail-silent)",
           I.recent_context_terms("/no/such/file.jsonl") == set())
 

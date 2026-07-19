@@ -99,6 +99,16 @@ it contains the correction.
 
 ## Step 3 — Critique against the rubric
 
+**SCOPE GATE (apply before the rubric): only CODE matters.** Mine only from
+material that is about the code itself — a bug being fixed or a feature being
+built. IGNORE entirely (do not mine, do not count as corrections, do not let it
+shape a lesson): session-management and tool-plumbing chatter ("try again",
+"i connected the mcp", "restart", model/permission/login talk), scheduling or
+meta requests, pasted announcements/marketing text, and anything else with no
+concrete bug or feature in it. A "correction" in a non-code exchange is not a
+correction signal. If a whole session contains no code work, skip it and mark
+it mined.
+
 | class | signature in transcript |
 |---|---|
 | `unverified-assumption` | a claim later contradicted by a check ("assumed X covers Y") |

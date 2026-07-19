@@ -333,15 +333,40 @@ def collect(project_root):
     ap = autopilot_state()
     K = kpis(lessons, metrics, inj, now)
 
+    # Join each injection with its deterministically-attributed outcome, and
+    # collect "Claude wrote/updated a lesson" events for the Logs feed.
+    events = read_jsonl("events.jsonl")
+    outcome = {}
+    for ev in events:
+        if ev.get("op") == "attribute":
+            outcome[(ev.get("session"), ev.get("lesson"))] = ev.get("outcome")
+    usage = {"injected": len(inj), "helpful": 0, "harmful": 0, "neutral": 0}
+    logs = []
+    for r in inj:
+        o = outcome.get((r.get("session"), r.get("lesson")))
+        if o in usage:
+            usage[o] += 1
+        logs.append({"kind": "fired", "ts": r.get("ts", 0), "lesson": r.get("lesson"),
+                     "tier": r.get("tier", ""), "outcome": o or "pending",
+                     "matched": (r.get("matched") or [])[:8]})
+    for ev in events:
+        if ev.get("op") in ("add", "bump-occurrence"):
+            logs.append({"kind": "learned", "ts": ev.get("ts", 0),
+                         "lesson": ev.get("lesson"), "op": ev.get("op"),
+                         "cls": ev.get("class", ""), "scope": ev.get("scope", "")})
+    logs.sort(key=lambda r: -(r.get("ts") or 0))
+
     lesson_view = []
-    for L in sorted(lessons, key=lambda x: (-x["occurrences"], x["id"])):
+    for L in lessons:
         f = fired.get(L["id"], [])
         lesson_view.append({
             "id": L["id"], "tier": L["tier"], "scope": L["scope"], "class": L["class"],
-            "signal": L["signal"], "symptom": L["symptom"][:120],
+            "signal": L["signal"], "symptom": L["symptom"][:180],
+            "created": L.get("created", ""),
             "occurrences": L["occurrences"], "helpful": L["helpful"], "harmful": L["harmful"],
             "fired": len(f), "last_fired": (max(f) if f else 0),
         })
+    lesson_view.sort(key=lambda x: (-x["fired"], x["id"]))
 
     return {
         "generated": now,
@@ -356,6 +381,8 @@ def collect(project_root):
             "helpful": sum(L["helpful"] for L in lessons),
             "harmful": sum(L["harmful"] for L in lessons),
         },
+        "usage": usage,
+        "logs": logs[:60],
         "kpis": K,
         "injections": sorted(inj, key=lambda r: -r.get("ts", 0))[:50],
         "lessons": lesson_view,
@@ -439,15 +466,24 @@ td{padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}tr:la
 .wrapT{overflow-x:auto;border:1px solid var(--line);border-radius:13px}
 .foot{color:var(--dim);font-size:11.5px;margin-top:36px;text-align:center}
 a{color:var(--blue)}
+.lesson{display:flex;flex-direction:column;gap:4px}
+.lesson .hd{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap}
+.lesson .nm{font-weight:650;font-size:14.5px;letter-spacing:-.01em}
+.lesson .sym{color:var(--dim);font-size:12.5px;line-height:1.45}
+.lesson .meta{display:flex;gap:14px;font-family:var(--mono);font-size:11px;color:var(--dim);margin-top:2px;flex-wrap:wrap}
+.chip{font-family:var(--mono);font-size:10px;font-weight:700;padding:2px 8px;border-radius:999px;letter-spacing:.05em;text-transform:uppercase}
+.chip.helpful{color:var(--acc);background:color-mix(in srgb,var(--acc) 14%,transparent)}
+.chip.harmful{color:var(--bad);background:color-mix(in srgb,var(--bad) 14%,transparent)}
+.chip.neutral{color:var(--dim);background:var(--line)}
+.chip.pending{color:var(--dim);background:transparent;box-shadow:inset 0 0 0 1px var(--line)}
+.chip.learned{color:var(--blue);background:color-mix(in srgb,var(--blue) 14%,transparent)}
+.lgrid{display:grid;gap:10px}
 </style></head><body><div class=wrap>
-<div class=top><h1>🎯 flywheel <span id=hpill class=pill></span></h1><div class=live id=live></div></div>
-<div class=sub id=sub></div>
-<h2>Health</h2><div class="card checks" id=health></div>
-<h2>At a glance</h2><div class="grid g6" id=stats></div>
-<h2>Did it make Claude better? · net of the global trend (difference-in-differences)</h2><div class=wrapT id=improve></div>
-<h2>Injection feed — is it firing?</h2><div class=wrapT id=timeline></div>
-<h2>Lesson catalog</h2><div class=wrapT id=catalog></div>
-<div class=foot>flywheel · state ~/.claude/flywheel/state · <span id=mode></span></div>
+<div class=top><h1>flywheel</h1></div>
+<h2 id=lessonsHead>Lessons</h2><div class=lgrid id=catalog></div>
+<h2>Usage</h2><div class=wrapT id=usage></div>
+<h2>Logs</h2><div class=wrapT id=timeline></div>
+<div class=foot><span id=mode></span></div>
 </div>
 <!--FLYWHEEL_DATA-->
 <script>
@@ -456,58 +492,56 @@ const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,m=>({'&':'&amp;','<':'&lt;',
 const ago=ts=>{if(!ts)return'never';const d=Date.now()/1000-ts;if(d<90)return'just now';if(d<3600)return Math.floor(d/60)+'m ago';if(d<86400)return Math.floor(d/3600)+'h ago';return Math.floor(d/86400)+'d ago'};
 const when=ts=>ts?new Date(ts*1000).toLocaleString([], {month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}):'—';
 function render(d){
-  document.getElementById('hpill').className='pill '+(d.health.ok?'ok':'bad');
-  document.getElementById('hpill').textContent=d.health.ok?'healthy':'check';
-  document.getElementById('sub').textContent='Self-improving memory · updated '+when(d.generated);
-  // health
-  const H=document.getElementById('health');H.innerHTML='';
-  d.health.checks.forEach(([n,g,det])=>{const r=E('div','chk '+(g?'y':'n'));r.append(E('span','d'),E('b',null,esc(n)),E('span','det',esc(det)));H.append(r)});
-  // stats
-  const t=d.totals,k=d.kpis;
-  const S=document.getElementById('stats');S.innerHTML='';
-  const stat=(v,l,s)=>{const c=E('div','card stat');c.append(E('div','v',esc(v)),E('div','l',esc(l)));if(s)c.append(E('div','s',s));return c};
-  const scope=Object.entries(t.by_scope).map(([a,b])=>b+' '+a).join(' · ');
-  S.append(stat(t.lessons,'lessons',scope),
-    stat(t.injections,'injections',t.inj_7d+' in 7d'),
-    stat(ago(t.last_injection),'last fired',''),
-    stat(k.median_friction==null?'—':k.median_friction,'median friction','lower = smoother'),
-    stat(k.median_rounds==null?'—':k.median_rounds,'median rounds',k.sessions_measured+' sessions'),
-    stat(k.coverage_pct+'%','coverage','tasks a lesson knows'));
-  // improve table — difference-in-differences (see docs/METRICS.md)
-  const imp=document.getElementById('improve');
-  const conf=(k.verdicts||[]), matched=k.per_lesson.filter(p=>(p.n_matched||0)>0);
-  if(conf.length){
-    imp.innerHTML='';const tb=E('table');
-    tb.innerHTML='<thead><tr><th>lesson</th><th class=num>friction before→after</th><th class=num>baseline trend</th><th class=num>net effect (DiD)</th><th class=num>n b→a</th></tr></thead>';
-    const body=E('tbody');
-    conf.forEach(p=>{const better=(p.did||0)<0;const bt=(p.delta_baseline>0?'+':'')+p.delta_baseline;
-      body.innerHTML+=`<tr><td><b>${esc(p.id)}</b><div class=sub2>vs concurrent uncovered-session trend</div></td>`
-        +`<td class=num>${p.friction_before} → ${p.friction_after}</td>`
-        +`<td class="num dim">${bt}</td>`
-        +`<td class="num delta ${better?'good':'worse'}">${better?'▼':'▲'} ${Math.abs(p.did)}</td>`
-        +`<td class="num dim">${p.matched_before}→${p.matched_after}</td></tr>`});
-    tb.append(body);imp.append(tb);
-  } else {
-    imp.innerHTML=`<div class=empty><div class=b>Collecting data — can't tell yet</div><p>Per lesson, this asks: did tasks that hit its problem get less painful <b>after</b> it was activated — beyond the trend on unrelated tasks (a difference-in-differences, so a model upgrade or you getting faster isn't miscredited to a lesson). Needs ≥5 matched sessions before <b>and</b> after activation, plus a baseline cohort.${matched.length?` ${matched.length} lesson(s) have matched some sessions.`:''}<br>Backfill history: <span class=mono>python3 ~/claude-flywheel/scripts/metrics.py backfill --since 60d</span></p></div>`;
-  }
-  // timeline
+  const u=d.usage||{injected:0,helpful:0,harmful:0,neutral:0};
+  // Lessons — the catalog, front and center
+  document.getElementById('lessonsHead').textContent='Lessons — '+d.lessons.length;
+  const cat=document.getElementById('catalog');cat.innerHTML='';
+  if(d.lessons.length){
+    d.lessons.forEach(L=>{
+      const c=E('div','card lesson');
+      const hd=E('div','hd');
+      hd.append(E('span','nm',esc(L.id)),E('span','tag '+esc(L.tier),esc(L.tier)));
+      if(L.helpful>0)hd.append(E('span','chip helpful','helped '+L.helpful+'×'));
+      if(L.harmful>0)hd.append(E('span','chip harmful','hurt '+L.harmful+'×'));
+      c.append(hd);
+      if(L.symptom)c.append(E('div','sym','“'+esc(L.symptom)+'”'));
+      const m=E('div','meta');
+      m.append(E('span',null,'used '+L.fired+'×'+(L.fired?' · last '+ago(L.last_fired):'')),
+               E('span',null,'seen '+L.occurrences+'×'),
+               E('span',null,L.created?('added '+esc(String(L.created).slice(0,10))):''));
+      c.append(m);cat.append(c);
+    });
+  } else cat.innerHTML=`<div class="card empty"><div class=b>No lessons yet</div><p>Run /flywheel:learn after a working session to mine the first one.</p></div>`;
+  // Usage — lessons count on top, then the four outcome metrics
+  const us=document.getElementById('usage');us.innerHTML='';
+  const tb=E('table');const b=E('tbody');
+  [['Lessons',d.lessons.length],
+   ['Times a lesson was injected ("used")',u.injected],
+   ['Proven helpful (on-topic success ack after firing)',u.helpful],
+   ['Proven harmful (user interrupted / corrected on-topic after firing)',u.harmful],
+   ['Neutral — fired, no outcome signal either way',u.neutral]
+  ].forEach(([l,v])=>{b.innerHTML+=`<tr><td>${esc(l)}</td><td class=num><b>${v}</b></td></tr>`});
+  tb.append(b);us.append(tb);
+  // Logs — every firing with its outcome, plus lessons Claude wrote
   const tl=document.getElementById('timeline');
-  if(d.injections.length){tl.innerHTML='';const tb=E('table');tb.innerHTML='<thead><tr><th>when</th><th>lesson</th><th>tier</th><th>matched terms</th></tr></thead>';const b=E('tbody');
-    d.injections.forEach(r=>{b.innerHTML+=`<tr><td class=mono>${when(r.ts)}</td><td><b>${esc(r.lesson)}</b></td><td class=dim>${esc(r.tier||'')}</td><td class=terms>${esc((r.matched||[]).slice(0,6).join(', '))}</td></tr>`});
-    tb.append(b);tl.append(tb);
-  } else tl.innerHTML=`<div class=empty><div class=b>No injections yet</div><p>The hook records here when a prompt matches a lesson. Fresh installs are empty; it fills as you work. (Hooks activate the session after install.)</p></div>`;
-  // catalog
-  const cat=document.getElementById('catalog');cat.innerHTML='';const ct=E('table');
-  ct.innerHTML='<thead><tr><th>lesson</th><th>scope</th><th>class</th><th>signal</th><th class=num>occ</th><th class=num>help</th><th class=num>harm</th><th class=num>fired</th></tr></thead>';
-  const cb=E('tbody');
-  d.lessons.forEach(L=>{cb.innerHTML+=`<tr><td><b>${esc(L.id)}</b><div class=sub2>${esc(L.symptom)}</div></td>`
-    +`<td><span class="tag ${esc(L.scope)}">${esc(L.scope)}</span></td><td class=dim>${esc(L.class)}</td><td class=mono>${esc(L.signal)}</td>`
-    +`<td class=num>${L.occurrences}</td><td class="num pos">${L.helpful}</td><td class="num ${L.harmful?'neg':'dim'}">${L.harmful}</td>`
-    +`<td class="num dim">${L.fired?ago(L.last_fired):'—'}</td></tr>`});
-  ct.append(cb);cat.append(ct);
+  const logs=d.logs||[];
+  if(logs.length){tl.innerHTML='';const lt=E('table');
+    lt.innerHTML='<thead><tr><th>when</th><th>event</th><th>lesson</th><th>outcome / detail</th></tr></thead>';
+    const lb=E('tbody');
+    logs.forEach(r=>{
+      if(r.kind==='learned'){
+        lb.innerHTML+=`<tr><td class=mono>${when(r.ts)}</td><td><span class="chip learned">${r.op==='add'?'lesson written':'lesson updated'}</span></td>`
+          +`<td><b>${esc(r.lesson)}</b></td><td class=dim>Claude ${r.op==='add'?'wrote this lesson':'bumped it (recurred)'}${r.cls?' · '+esc(r.cls):''}</td></tr>`;
+      } else {
+        lb.innerHTML+=`<tr><td class=mono>${when(r.ts)}</td><td><span class="chip ${esc(r.outcome)}">${esc(r.outcome)}</span></td>`
+          +`<td><b>${esc(r.lesson)}</b></td><td class=terms>matched: ${esc((r.matched||[]).join(', '))}</td></tr>`;
+      }
+    });
+    lt.append(lb);tl.append(lt);
+  } else tl.innerHTML=`<div class=empty><div class=b>Nothing logged yet</div><p>When a lesson fires into a session (with its helpful/harmful/neutral outcome) or Claude writes a new lesson, it shows up here.</p></div>`;
 }
-async function tick(){try{const r=await fetch('/api/data',{cache:'no-store'});render(await r.json());document.getElementById('live').innerHTML='<span class=dot></span>live';document.getElementById('mode').textContent='live · refreshes every 5s';}catch(e){document.getElementById('live').textContent='';}}
-if(window.__DATA__){render(window.__DATA__);document.getElementById('mode').textContent='static snapshot — run `python3 dashboard.py --serve` for live';}
+async function tick(){try{const r=await fetch('/api/data',{cache:'no-store'});render(await r.json());document.getElementById('mode').textContent='live · refreshes every 5s';}catch(e){document.getElementById('mode').textContent='reconnecting…';}}
+if(window.__DATA__){render(window.__DATA__);document.getElementById('mode').textContent='static snapshot — run /flywheel:serve for live';}
 else{tick();setInterval(tick,5000);}
 </script></body></html>"""
 
