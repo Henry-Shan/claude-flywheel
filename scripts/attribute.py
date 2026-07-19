@@ -222,18 +222,24 @@ def _is_success(text):
     return bool(POSITIVE_ACK.search(text)) and not M.CORRECTION.search(text)
 
 
-def classify(events, inject_ts, lesson_terms):
+EVIDENCE_WINDOW = 900   # seconds after injection in which evidence counts
+
+
+def classify(events, inject_ts, lesson_terms, window=EVIDENCE_WINDOW):
     """Structural outcome of the session AFTER the injection.
     Returns (outcome, basis). lesson_terms = the injection's matched terms, used
     to keep BOTH signals topical (a generic ack/correction about an unrelated
-    subtask must not credit/blame this lesson). Conservative by construction:
-      harmful  = on-topic correction / interruption after the advice landed
-      helpful  = an on-topic, non-negated success acknowledgement
+    subtask must not credit/blame this lesson). Evidence is WINDOWED: sessions
+    solve several tasks, so an interruption or ack long after the injection is
+    about some other task — only the next ~15 minutes speak to this lesson.
+    Conservative by construction:
+      harmful  = on-topic correction / interruption soon after the advice landed
+      helpful  = an on-topic, non-negated success ack soon after
       neutral  = everything else (the honest default — no bump)."""
     if events is None:
         return "neutral", "no-transcript"
-    # only post-injection events with a real timestamp are judgeable
-    post = [e for e in events if e[0] and e[0] >= inject_ts]
+    # only near-post-injection events with a real timestamp are judgeable
+    post = [e for e in events if e[0] and inject_ts <= e[0] <= inject_ts + window]
     interrupts = sum(1 for (_ts, _h, _t, hi) in post if hi)
 
     def topical(text):
@@ -428,7 +434,14 @@ def attribute_session(session_id, transcript_path=None):
     return applied
 
 
-def backfill():
+def backfill(min_idle_minutes=20):
+    """Sweep unattributed injections across ALL sessions — catches sessions that
+    ended before attribution existed, or whose SessionEnd hook never fired.
+
+    Guard: a transcript modified in the last `min_idle_minutes` is probably a
+    STILL-OPEN session — skip it, or we'd freeze a premature verdict that the
+    (session, lesson)-once dedupe would then never re-score. The SessionEnd
+    path judges those the moment they actually end."""
     sessions = []
     for r in _read_jsonl(INJECTIONS):
         sid = r.get("session")
@@ -436,7 +449,13 @@ def backfill():
             sessions.append(sid)
     total = []
     for sid in sessions:
-        total += attribute_session(sid)   # each call re-reads `seen` under lock
+        tpath = transcript_for(sid, "")
+        try:
+            if tpath and time.time() - os.path.getmtime(tpath) < min_idle_minutes * 60:
+                continue   # likely still open — leave for its own SessionEnd
+        except OSError:
+            pass
+        total += attribute_session(sid, tpath)
     return total
 
 

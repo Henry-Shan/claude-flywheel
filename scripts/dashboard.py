@@ -569,6 +569,7 @@ a{color:var(--blue)}
 .chip.pending{color:var(--dim);background:transparent;box-shadow:inset 0 0 0 1px var(--line)}
 .chip.learned{color:var(--blue);background:color-mix(in srgb,var(--blue) 14%,transparent)}
 .chip.pulled{color:var(--blue);background:transparent;box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--blue) 45%,transparent)}
+.chip.injected{color:var(--acc);background:color-mix(in srgb,var(--acc) 14%,transparent)}
 .lgrid{display:grid;gap:10px}
 .ptxt{color:var(--dim);font-size:12px;max-width:460px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .trendrow{display:flex;align-items:flex-end;gap:14px;margin-top:12px}
@@ -658,8 +659,8 @@ function render(d){
     logs.forEach(r=>{
       const p=r.prompt?`<div class=ptxt title="${esc(r.prompt)}">${esc(r.prompt)}</div>`:'<span class=dim>—</span>';
       if(r.kind==='learned'){
-        lb.innerHTML+=`<tr><td class=mono>${when(r.ts)}</td><td><span class="chip learned">${r.op==='add'?'lesson written':'lesson updated'}</span></td>`
-          +`<td><b>${esc(r.lesson)}</b></td><td class=dim>Claude ${r.op==='add'?'wrote this lesson from a mined session':'saw it recur and bumped it'}</td></tr>`;
+        lb.innerHTML+=`<tr><td class=mono>${when(r.ts)}</td><td><span class="chip learned" style="white-space:nowrap">${r.op==='add'?'lesson written':'lesson updated'}</span></td>`
+          +`<td colspan=2 style="white-space:nowrap"><b>${esc(r.lesson)}</b> <span class=dim>· mined by Claude</span></td></tr>`;
       } else if(r.kind==='message'){
         lb.innerHTML+=`<tr><td class=mono>${when(r.ts)}</td><td class=dim>message</td><td class=dim>—</td><td>${p}</td></tr>`;
       } else if(r.kind==='pulled'){
@@ -669,7 +670,7 @@ function render(d){
         const items=r.items||[{lesson:r.lesson,outcome:r.outcome,matched:r.matched}];
         const olabel=o=>o==='pending'?'awaiting outcome':o;
         const les=items.map(it=>`<div><span class="chip ${esc(it.outcome)}" title="outcome is scored when the session ends">${esc(olabel(it.outcome))}</span> <b title="matched: ${esc((it.matched||[]).join(', '))}">${esc(it.lesson)}</b></div>`).join('');
-        lb.innerHTML+=`<tr><td class=mono>${when(r.ts)}</td><td class=dim>injected</td><td>${les}</td><td>${p}</td></tr>`;
+        lb.innerHTML+=`<tr><td class=mono>${when(r.ts)}</td><td><span class="chip injected">injected</span></td><td>${les}</td><td>${p}</td></tr>`;
       }
     });
     lt.append(lb);tl.append(lt);

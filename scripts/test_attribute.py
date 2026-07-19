@@ -80,6 +80,12 @@ def main():
     o, _ = A.classify([ev(500, False, "", True), ev(1100, True, "that fixed the schema")], INJ, terms)
     check("pre-injection interrupt ignored, on-topic ack after -> helpful", o, "helpful")
 
+    # evidence WINDOW: an interrupt hours later belongs to some other task
+    o, _ = A.classify([ev(INJ + 7200, False, "", True)], INJ, terms)
+    check("interrupt 2h later -> neutral (outside evidence window)", o, "neutral")
+    o, _ = A.classify([ev(INJ + 7200, True, "the schema works now, fixed")], INJ, terms)
+    check("ack 2h later -> neutral (outside evidence window)", o, "neutral")
+
     print("\nbump_counter (frontmatter integer increment / insert):")
     d = tempfile.mkdtemp()
     p = os.path.join(d, "L.md")
@@ -166,8 +172,8 @@ def main():
     with open(A.INJECTIONS, "w") as fh:
         for i in range(N):
             sid = f"s{i}"
-            fh.write(json.dumps({"session": sid, "lesson": "gate-test", "ts": 1000,
-                                 "matched": ["schema"], "project": ""}) + "\n")
+            fh.write(json.dumps({"session": sid, "lesson": "gate-test", "ts": 1577836790,
+                                 "matched": ["schema"], "project": ""}) + "\n")   # 10s before the 2020-01-01 ack
             tp = os.path.join(cd, f"{sid}.jsonl")
             open(tp, "w").write(json.dumps({"timestamp": "2020-01-01T00:00:00Z", "type": "user",
                 "message": {"content": "the schema works now"}}) + "\n")

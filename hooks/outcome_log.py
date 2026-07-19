@@ -172,6 +172,13 @@ def main():
     if raw_session_id:
         spawn_attribution(raw_session_id, transcript_path)
 
+    # Also sweep stragglers: sessions that ended without attribution (crashed,
+    # or predate the attributor). Idempotent + idle-guarded, so it never
+    # double-scores and never judges a still-open session.
+    s = _script("attribute.py")
+    if os.path.exists(s):
+        _spawn_detached([sys.executable, s, "backfill"])
+
     # If autopilot is enabled, kick the detached runner. It self-guards against
     # recursion, concurrency, and rapid re-runs, so an unconditional nudge here
     # is safe — the runner decides whether there's actually work to do.
