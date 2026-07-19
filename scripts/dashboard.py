@@ -667,7 +667,8 @@ function render(d){
           +`<td><b>${esc(r.lesson)}</b></td><td>${p}</td></tr>`;
       } else {
         const items=r.items||[{lesson:r.lesson,outcome:r.outcome,matched:r.matched}];
-        const les=items.map(it=>`<div><span class="chip ${esc(it.outcome)}">${esc(it.outcome)}</span> <b title="matched: ${esc((it.matched||[]).join(', '))}">${esc(it.lesson)}</b></div>`).join('');
+        const olabel=o=>o==='pending'?'awaiting outcome':o;
+        const les=items.map(it=>`<div><span class="chip ${esc(it.outcome)}" title="outcome is scored when the session ends">${esc(olabel(it.outcome))}</span> <b title="matched: ${esc((it.matched||[]).join(', '))}">${esc(it.lesson)}</b></div>`).join('');
         lb.innerHTML+=`<tr><td class=mono>${when(r.ts)}</td><td class=dim>injected</td><td>${les}</td><td>${p}</td></tr>`;
       }
     });
