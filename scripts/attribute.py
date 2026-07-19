@@ -377,13 +377,21 @@ def attribute_session(session_id, transcript_path=None):
     if not injections and not pulls:
         return []
 
+    def prompt_before(ts):
+        """Last human turn at/before ts — the work the pull was in service of."""
+        best = ""
+        for ets, is_h, text, _hi in (events or []):
+            if is_h and ets and ets <= ts:
+                best = text
+        return best[:180]
+
     pending = []
     for ts, lid, fp in pulls:           # pulls FIRST — they win the dedupe
         outcome, basis = classify(events, ts, _keyword_terms(fp))
         if basis == "no-transcript":
             continue
         # a pull knows its exact file — no directory search needed
-        pending.append((fp, lid, outcome, "pulled; " + basis, "pull"))
+        pending.append((fp, lid, outcome, "pulled; " + basis, "pull", prompt_before(ts)))
     for rec in injections:
         lid = rec.get("lesson")
         if not lid:
@@ -391,19 +399,21 @@ def attribute_session(session_id, transcript_path=None):
         outcome, basis = classify(events, rec.get("ts", 0), set(rec.get("matched") or []))
         if basis == "no-transcript":
             continue  # can't judge yet — leave unattributed for a later run
-        pending.append((None, lid, outcome, basis, "push"))
+        pending.append((None, lid, outcome, basis, "push", ""))
     if not pending:
         return []
 
     applied = []
     with _lock():
         seen = _attributed_pairs()   # fresh read UNDER the lock
-        for known_path, lid, outcome, basis, mode in pending:
+        for known_path, lid, outcome, basis, mode, ptxt in pending:
             if (session_id, lid) in seen:
                 continue
             ev = {"ts": int(time.time()), "op": "attribute", "auto": True,
                   "session": session_id, "lesson": lid, "mode": mode,
                   "outcome": outcome, "basis": basis}
+            if ptxt:
+                ev["prompt"] = ptxt
             if outcome in ("helpful", "harmful"):
                 f = (known_path if known_path and os.path.exists(known_path)
                      else find_lesson_file(lid, project))

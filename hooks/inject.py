@@ -697,6 +697,7 @@ def main():
                 "tier": lesson["tier"],
                 "rank": round(rank, 2),
                 "matched": s["matched"][:12],
+                "prompt": prompt[:180],   # what the user typed — shown in Logs
                 "project": project_root or "",
             }
         )

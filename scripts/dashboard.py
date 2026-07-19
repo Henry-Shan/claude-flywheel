@@ -352,13 +352,15 @@ def collect(project_root):
             usage[o] += 1
         logs.append({"kind": "fired", "ts": r.get("ts", 0), "lesson": r.get("lesson"),
                      "tier": r.get("tier", ""), "outcome": o or "pending",
-                     "matched": (r.get("matched") or [])[:8]})
+                     "matched": (r.get("matched") or [])[:8],
+                     "prompt": r.get("prompt", "")})
     for ev in pulls:
         o = ev.get("outcome")
         if o in usage:
             usage[o] += 1
         logs.append({"kind": "pulled", "ts": ev.get("ts", 0),
-                     "lesson": ev.get("lesson"), "outcome": o or "pending"})
+                     "lesson": ev.get("lesson"), "outcome": o or "pending",
+                     "prompt": ev.get("prompt", "")})
         fired.setdefault(ev.get("lesson"), []).append(ev.get("ts", 0))  # pulls count as "used"
     learned = [{"kind": "learned", "ts": ev.get("ts", 0),
                 "lesson": ev.get("lesson"), "op": ev.get("op"),
@@ -396,6 +398,7 @@ def collect(project_root):
             "harmful": sum(L["harmful"] for L in lessons),
         },
         "usage": usage,
+        "sessions": _session_stats(metrics, K),
         "logs": logs,
         "kpis": K,
         "injections": sorted(inj, key=lambda r: -r.get("ts", 0))[:50],
@@ -408,6 +411,25 @@ def _count(items, key):
     for it in items:
         out[it.get(key, "?")] = out.get(it.get(key, "?"), 0) + 1
     return out
+
+
+def _session_stats(metrics, K):
+    """Plain-language rollup of the structural session metrics (metrics.py):
+    how many real sessions are measured, how much back-and-forth they take, and
+    how rough they are — plus the weekly friction trend for the bar strip."""
+    real = [m for m in metrics
+            if not m.get("resumed") and (m.get("human_turns") or 0) >= 1
+            and (m.get("started") or 0) > 0]
+    smooth = sum(1 for m in real if (m.get("friction") or 0) == 0)
+    return {
+        "measured": len(real),
+        "median_rounds": K["median_rounds"],
+        "median_friction": K["median_friction"],
+        "smooth_pct": round(100 * smooth / len(real)) if real else 0,
+        "corrections": sum(m.get("corrections", 0) for m in real),
+        "interruptions": sum(m.get("interruptions", 0) for m in real),
+        "trend": K["friction_trend"],   # [{weeks_ago, friction, n}] oldest→newest
+    }
 
 
 # ------------------------------------------------------------------------ text
@@ -493,10 +515,15 @@ a{color:var(--blue)}
 .chip.learned{color:var(--blue);background:color-mix(in srgb,var(--blue) 14%,transparent)}
 .chip.pulled{color:var(--blue);background:transparent;box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--blue) 45%,transparent)}
 .lgrid{display:grid;gap:10px}
+.ptxt{color:var(--dim);font-size:12px;max-width:460px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.trendrow{display:flex;align-items:flex-end;gap:14px;margin-top:12px}
+.trendrow .spark{flex:1;height:44px}
+.trendlab{font-family:var(--mono);font-size:10.5px;color:var(--dim);white-space:nowrap}
 </style></head><body><div class=wrap>
 <div class=top><h1>flywheel</h1></div>
 <h2 id=lessonsHead>Lessons</h2><div class=lgrid id=catalog></div>
 <h2>Usage</h2><div class=wrapT id=usage></div>
+<h2>Sessions — how smooth is the work?</h2><div id=sess></div>
 <h2>Logs</h2><div class=wrapT id=timeline></div>
 <div class=foot><span id=mode></span></div>
 </div>
@@ -537,22 +564,48 @@ function render(d){
    ['Neutral — fired, no outcome signal either way',u.neutral]
   ].forEach(([l,v])=>{b.innerHTML+=`<tr><td>${esc(l)}</td><td class=num><b>${v}</b></td></tr>`});
   tb.append(b);us.append(tb);
-  // Logs — every firing with its outcome, plus lessons Claude wrote
+  // Sessions — the structural metrics, in plain language
+  const s=d.sessions;
+  if(s){const S=document.getElementById('sess');S.innerHTML='';
+    const grid=E('div','grid g6');
+    const stat=(v,l,sub)=>{const c=E('div','card stat');c.append(E('div','v',esc(v)),E('div','l',esc(l)));if(sub)c.append(E('div','s',esc(sub)));return c};
+    grid.append(
+      stat(s.measured,'sessions measured','real working sessions, auto-tracked'),
+      stat(s.median_rounds==null?'—':s.median_rounds,'median rounds','your messages per session — fewer = resolved faster'),
+      stat(s.median_friction==null?'—':s.median_friction,'median friction','corrections + interruptions + errors — lower = smoother'),
+      stat(s.smooth_pct+'%','smooth sessions','ended with zero corrections, interruptions, or errors'),
+      stat(s.corrections,'total corrections','times you had to say "no, that\'s wrong"'),
+      stat(s.interruptions,'total interruptions','times you hit stop mid-answer'));
+    S.append(grid);
+    if((s.trend||[]).length>1){
+      const mx=Math.max(...s.trend.map(w=>w.friction||0),1);
+      const row=E('div','trendrow');
+      row.append(E('span','trendlab','friction by week →'));
+      const sp=E('div','spark');
+      s.trend.forEach(w=>{const b=E('i');b.style.height=Math.max(6,Math.round(100*(w.friction||0)/mx))+'%';
+        b.title=w.weeks_ago+' week(s) ago · median friction '+w.friction+' · '+w.n+' sessions';sp.append(b)});
+      row.append(sp,E('span','trendlab','now'));
+      const card=E('div','card');card.append(row,E('div','s','each bar = one week\'s median friction (hover for detail). Bars shrinking over time = the flywheel is working.'));
+      S.append(document.createElement('br'),card);
+    }
+  }
+  // Logs — every use of a lesson, with what the user typed
   const tl=document.getElementById('timeline');
   const logs=d.logs||[];
   if(logs.length){tl.innerHTML='';const lt=E('table');
-    lt.innerHTML='<thead><tr><th>when</th><th>event</th><th>lesson</th><th>outcome / detail</th></tr></thead>';
+    lt.innerHTML='<thead><tr><th>when</th><th>event</th><th>lesson</th><th>what you typed</th></tr></thead>';
     const lb=E('tbody');
     logs.forEach(r=>{
+      const p=r.prompt?`<div class=ptxt title="${esc(r.prompt)}">${esc(r.prompt)}</div>`:'<span class=dim>—</span>';
       if(r.kind==='learned'){
         lb.innerHTML+=`<tr><td class=mono>${when(r.ts)}</td><td><span class="chip learned">${r.op==='add'?'lesson written':'lesson updated'}</span></td>`
-          +`<td><b>${esc(r.lesson)}</b></td><td class=dim>Claude ${r.op==='add'?'wrote this lesson':'bumped it (recurred)'}${r.cls?' · '+esc(r.cls):''}</td></tr>`;
+          +`<td><b>${esc(r.lesson)}</b></td><td class=dim>Claude ${r.op==='add'?'wrote this lesson from a mined session':'saw it recur and bumped it'}</td></tr>`;
       } else if(r.kind==='pulled'){
-        lb.innerHTML+=`<tr><td class=mono>${when(r.ts)}</td><td><span class="chip pulled">pulled</span></td>`
-          +`<td><b>${esc(r.lesson)}</b></td><td class=dim>Claude chose to read this lesson · outcome: <span class="chip ${esc(r.outcome)}">${esc(r.outcome)}</span></td></tr>`;
+        lb.innerHTML+=`<tr><td class=mono>${when(r.ts)}</td><td><span class="chip pulled">pulled</span> <span class="chip ${esc(r.outcome)}">${esc(r.outcome)}</span></td>`
+          +`<td><b>${esc(r.lesson)}</b></td><td>${p}</td></tr>`;
       } else {
         lb.innerHTML+=`<tr><td class=mono>${when(r.ts)}</td><td><span class="chip ${esc(r.outcome)}">${esc(r.outcome)}</span></td>`
-          +`<td><b>${esc(r.lesson)}</b></td><td class=terms>matched: ${esc((r.matched||[]).join(', '))}</td></tr>`;
+          +`<td><b title="matched: ${esc((r.matched||[]).join(', '))}">${esc(r.lesson)}</b></td><td>${p}</td></tr>`;
       }
     });
     lt.append(lb);tl.append(lt);
