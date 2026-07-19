@@ -325,7 +325,7 @@ def kpis(lessons, metrics, injections, now):
 # stops NEW injections into them; this display-side filter also hides any
 # stragglers logged by still-running pre-0.7.1 sessions, and keeps them out of
 # the usage counts (they were never legitimate uses).
-_SCRIPTED_RE = re.compile(r"^\s*[Yy]ou are (an? )?[A-Z][\w-]*\s*[,:—]")
+_SCRIPTED_RE = re.compile(r"^\s*[Yy]ou are (an? )?[A-Z][\w-]*('s\b|\s*[,:*—])")
 
 
 # --------------------------------------------------------------------- collect

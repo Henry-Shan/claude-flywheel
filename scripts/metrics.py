@@ -217,7 +217,7 @@ def extract(path):
         "resumed": resumed,
         # scripted persona first-prompt ("You are Echo, …") is an SDK/cron tell too
         "sdk": sdk or bool(human_blob
-                           and re.match(r"^\s*[Yy]ou are (an? )?[A-Z][\w-]*\s*[,:]",
+                           and re.match(r"^\s*[Yy]ou are (an? )?[A-Z][\w-]*('s\b|\s*[,:*—])",
                                         human_blob[0])),
         "human_turns": human_turns,       # ≈ rounds-to-resolution
         "assistant_turns": assistant_turns,

@@ -411,7 +411,7 @@ def looks_meta(prompt):
 # influence. The flywheel's own mined lesson (injection-misfires-on-headless-
 # sdk-runs) diagnosed these; humans typing "you are wrong about X" don't match
 # the <Name>, / <Name>: shape.
-_SCRIPTED = re.compile(r"^\s*[Yy]ou are (an? )?[A-Z][\w-]*\s*[,:—]")  # name must be Capitalized
+_SCRIPTED = re.compile(r"^\s*[Yy]ou are (an? )?[A-Z][\w-]*('s\b|\s*[,:*—])")  # persona shape: Name, / Name: / Name's
 
 
 def looks_scripted(prompt):
