@@ -118,6 +118,7 @@ def extract(path):
     model = ""
     human_blob = []
     friction_turns = 0
+    sdk = False   # headless SDK/cron session — scripted prompt, no human at the wheel
 
     try:
         fh = open(path, "r", encoding="utf-8", errors="replace")
@@ -128,6 +129,9 @@ def extract(path):
             line = line.strip()
             if not line:
                 continue
+            if not sdk and ('"entrypoint":"sdk' in line or '"entrypoint": "sdk' in line
+                            or '"promptSource":"sdk"' in line or '"promptSource": "sdk"' in line):
+                sdk = True
             try:
                 o = json.loads(line)
             except ValueError:
@@ -211,6 +215,10 @@ def extract(path):
         "ended": e1,
         "duration_min": 0.0 if resumed else dur_min,
         "resumed": resumed,
+        # scripted persona first-prompt ("You are Echo, …") is an SDK/cron tell too
+        "sdk": sdk or bool(human_blob
+                           and re.match(r"^\s*[Yy]ou are (an? )?[A-Z][\w-]*\s*[,:]",
+                                        human_blob[0])),
         "human_turns": human_turns,       # ≈ rounds-to-resolution
         "assistant_turns": assistant_turns,
         "tool_calls": tool_calls,

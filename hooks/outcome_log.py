@@ -67,6 +67,19 @@ def automation_enabled():
         return False
 
 
+def is_sdk_session(transcript_path, sniff_bytes=4096):
+    """Headless SDK/cron sessions (entrypoint sdk-cli / promptSource sdk) have a
+    fixed scripted prompt and no human corrections — nothing to mine. Keep them
+    out of the queue (they were 60%+ of the backlog as Echo cron runs)."""
+    try:
+        with open(transcript_path, "rb") as fh:
+            head = fh.read(sniff_bytes).decode("utf-8", "replace")
+    except OSError:
+        return False
+    return ('"entrypoint":"sdk' in head or '"entrypoint": "sdk' in head
+            or '"promptSource":"sdk"' in head or '"promptSource": "sdk"' in head)
+
+
 def _script(name):
     return os.path.abspath(os.path.join(
         os.path.dirname(os.path.abspath(__file__)), "..", "scripts", name))
@@ -143,7 +156,8 @@ def main():
         size = os.path.getsize(transcript_path) if transcript_path else 0
     except OSError:
         size = 0
-    if size >= MIN_TRANSCRIPT_BYTES and session_id not in queued_session_ids():
+    if (size >= MIN_TRANSCRIPT_BYTES and session_id not in queued_session_ids()
+            and not is_sdk_session(transcript_path)):
         record = dict(record, transcript_bytes=size, mined=False)
         append_line(MINE_QUEUE, record)
         trim_file(MINE_QUEUE, MAX_QUEUE_LINES)

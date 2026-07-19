@@ -81,6 +81,18 @@ def main():
     check("real bug report is NOT meta",
           not I.looks_meta("the delete button crashes the modal with an undefined error"))
 
+    print("\nscripted/SDK session gate (Echo-cron class of misfire):")
+    check("'You are Echo, drafting iMessage replies…' is scripted",
+          I.looks_scripted("You are Echo, drafting iMessage replies for Henry."))
+    check("'you are wrong, the schema check is broken' is NOT scripted",
+          not I.looks_scripted("you are wrong, the schema check is broken"))
+    d0 = tempfile.mkdtemp()
+    sdk_t = os.path.join(d0, "sdk.jsonl")
+    open(sdk_t, "w").write(json.dumps({"type": "user", "entrypoint": "sdk-cli",
+                                       "message": {"content": "x"}}) + "\n")
+    check("sdk transcript detected", I.is_sdk_session(sdk_t))
+    check("missing transcript -> not sdk (fail-open)", not I.is_sdk_session("/no/file"))
+
     print("\ngeneric tokens never count as matches:")
     gl = {"g": L("g", "user, data, state, element", "")}
     sg = I.score_lesson(gl["g"], I.tokens("the user sees data in this state element"),

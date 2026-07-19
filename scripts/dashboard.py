@@ -246,8 +246,9 @@ def kpis(lessons, metrics, injections, now):
     proof — N and the confounds are shown, and a verdict only renders when every
     cell clears N_GATE and |DiD| ≥ MIN_EFFECT."""
     real = [m for m in metrics
-            if not m.get("resumed") and (m.get("human_turns") or 0) >= 1
-            and (m.get("started") or 0) > 0]          # drop unparseable timestamps
+            if not m.get("resumed") and not m.get("sdk")
+            and (m.get("human_turns") or 0) >= 1
+            and (m.get("started") or 0) > 0]          # drop unparseable/scripted
 
     lesson_terms = [(L["id"], L["_terms"]) for L in lessons if L["_terms"]]
 
@@ -346,14 +347,20 @@ def collect(project_root):
     # "used" = pushed injections + deliberate pulls (Claude Read the lesson file)
     usage = {"injected": len(inj) + len(pulls), "helpful": 0, "harmful": 0, "neutral": 0}
     logs = []
+    # One row per firing TURN (session+ts): a prompt that matched two lessons is
+    # one event with two entries, not two visually-duplicate rows.
+    turns = {}
     for r in inj:
         o = outcome.get((r.get("session"), r.get("lesson")))
         if o in usage:
             usage[o] += 1
-        logs.append({"kind": "fired", "ts": r.get("ts", 0), "lesson": r.get("lesson"),
-                     "tier": r.get("tier", ""), "outcome": o or "pending",
-                     "matched": (r.get("matched") or [])[:8],
-                     "prompt": r.get("prompt", "")})
+        g = turns.setdefault((r.get("session"), r.get("ts", 0)),
+                             {"kind": "fired", "ts": r.get("ts", 0),
+                              "items": [], "prompt": r.get("prompt", "")})
+        g["items"].append({"lesson": r.get("lesson"), "outcome": o or "pending",
+                           "matched": (r.get("matched") or [])[:8]})
+        g["prompt"] = g["prompt"] or r.get("prompt", "")
+    logs.extend(turns.values())
     for ev in pulls:
         o = ev.get("outcome")
         if o in usage:
@@ -424,7 +431,8 @@ def _session_stats(metrics, K, ratings=None, used_sessions=None):
     metric: human 1-5 session ratings (/flywheel:rate), including the honest
     causal cut (rating lift on lesson-using sessions, gated on n≥5 per side)."""
     real = [m for m in metrics
-            if not m.get("resumed") and (m.get("human_turns") or 0) >= 1
+            if not m.get("resumed") and not m.get("sdk")
+            and (m.get("human_turns") or 0) >= 1
             and (m.get("started") or 0) > 0]
     smooth = sum(1 for m in real if (m.get("friction") or 0) == 0)
 
@@ -634,8 +642,9 @@ function render(d){
         lb.innerHTML+=`<tr><td class=mono>${when(r.ts)}</td><td><span class="chip pulled">pulled</span> <span class="chip ${esc(r.outcome)}">${esc(r.outcome)}</span></td>`
           +`<td><b>${esc(r.lesson)}</b></td><td>${p}</td></tr>`;
       } else {
-        lb.innerHTML+=`<tr><td class=mono>${when(r.ts)}</td><td><span class="chip ${esc(r.outcome)}">${esc(r.outcome)}</span></td>`
-          +`<td><b title="matched: ${esc((r.matched||[]).join(', '))}">${esc(r.lesson)}</b></td><td>${p}</td></tr>`;
+        const items=r.items||[{lesson:r.lesson,outcome:r.outcome,matched:r.matched}];
+        const les=items.map(it=>`<div><span class="chip ${esc(it.outcome)}">${esc(it.outcome)}</span> <b title="matched: ${esc((it.matched||[]).join(', '))}">${esc(it.lesson)}</b></div>`).join('');
+        lb.innerHTML+=`<tr><td class=mono>${when(r.ts)}</td><td class=dim>injected</td><td>${les}</td><td>${p}</td></tr>`;
       }
     });
     lt.append(lb);tl.append(lt);

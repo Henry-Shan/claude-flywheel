@@ -406,6 +406,33 @@ def looks_meta(prompt):
     return len(p) < 120 and bool(_META_HINT.search(p)) and not _CODE_HINT.search(p)
 
 
+# Scripted persona prompts ("You are Echo, drafting iMessage replies…") are
+# cron/SDK jobs, not a human typing — a fixed prompt an injected lesson cannot
+# influence. The flywheel's own mined lesson (injection-misfires-on-headless-
+# sdk-runs) diagnosed these; humans typing "you are wrong about X" don't match
+# the <Name>, / <Name>: shape.
+_SCRIPTED = re.compile(r"^\s*[Yy]ou are (an? )?[A-Z][\w-]*\s*[,:—]")  # name must be Capitalized
+
+
+def looks_scripted(prompt):
+    return bool(_SCRIPTED.match(prompt))
+
+
+def is_sdk_session(transcript_path, sniff_bytes=4096):
+    """Headless SDK/cron sessions self-identify in the transcript head
+    (entrypoint: sdk-cli / promptSource: sdk). Never inject into them: the
+    prompt is scripted, so injections are wasted tokens + polluted attribution."""
+    if not transcript_path:
+        return False
+    try:
+        with open(transcript_path, "rb") as fh:
+            head = fh.read(sniff_bytes).decode("utf-8", "replace")
+    except OSError:
+        return False
+    return ('"entrypoint":"sdk' in head or '"entrypoint": "sdk' in head
+            or '"promptSource":"sdk"' in head or '"promptSource": "sdk"' in head)
+
+
 _SYNTH_PREFIXES = (
     "[request interrupted", "<command-", "<local-command", "<task-notification",
     "<system-reminder", "caveat: the messages below", "[system notification",
@@ -597,7 +624,9 @@ def main():
         return
     if len(prompt) < 12 or prompt.startswith("/"):
         return
-    if looks_meta(prompt):
+    if looks_meta(prompt) or looks_scripted(prompt):
+        return
+    if is_sdk_session(data.get("transcript_path")):
         return
 
     project_root = find_project_root(cwd)
