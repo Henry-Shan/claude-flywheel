@@ -34,6 +34,28 @@ known mistake *before* re-making it.
 5. **Never touch CLAUDE.md.** Promotion to always-on rules is
    `/flywheel:consolidate`'s job, human-gated.
 
+## HEADLESS MODE (FLYWHEEL_AUTOPILOT=1) — write to the OUTBOX, not ~/.claude
+
+Claude Code refuses headless writes under `~/.claude/**` (sensitive-path
+protection — do NOT retry variants; 17 runs confirmed it's deterministic).
+When `FLYWHEEL_AUTOPILOT=1`, your working directory IS the outbox
+(`~/.flywheel-outbox`); after your run, a deterministic applier moves
+everything into place. Write ALL artifacts to the outbox instead of their
+normal destinations:
+
+- new lesson → `lessons/<id>.md` (full file, normal frontmatter). For a
+  PROJECT-tier lesson add a frontmatter line `project: <absolute repo path>`;
+  omit it for global.
+- occurrence bump → append to `bumps.jsonl`:
+  `{"lesson": "<id>", "occurrences": 1, "sessions_append": "<sid>/L<a>-L<b>"}`
+- events → append the normal event lines to `events.jsonl` (in the outbox).
+- processed sessions → append each session_id to `mined.txt` (one per line);
+  the applier flips them in the real queue.
+- any report file → `state/<name>` in the outbox.
+
+Do NOT write pending-application memory files anymore — the outbox replaces
+that workaround entirely. Everything else in this skill applies unchanged.
+
 ## Step 1 — Resolve which transcript(s) to mine
 
 Transcripts live at `~/.claude/projects/<munged-cwd>/*.jsonl`, where

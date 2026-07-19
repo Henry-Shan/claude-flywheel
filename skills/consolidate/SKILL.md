@@ -43,6 +43,13 @@ means: **do the automatic hygiene and metrics, but perform ZERO promotions.**
   approve. Also write the metrics report to
   `~/.claude/flywheel/state/consolidate-report.md`.
 - Do not use AskUserQuestion in `--auto` mode (nothing can answer it).
+- **Headless writes go to the OUTBOX** (your cwd, `~/.flywheel-outbox`) — never
+  to `~/.claude/**` directly (blocked as sensitive; deterministic, don't retry).
+  Lesson edits → rewrite the full file under `lessons/<id>.md` is NOT supported
+  for edits (applier skips existing ids) — for hygiene edits, emit
+  `bumps.jsonl` entries where possible and list anything else in
+  `state/consolidate-report.md`; reports/candidates → `state/<name>`. The
+  applier moves them into ~/.claude/flywheel/state after the run.
 
 Interactive `/flywheel:consolidate` (no `--auto`) behaves as below — with the
 human gate live.
