@@ -141,6 +141,30 @@ def touch(path):
         pass
 
 
+def queue_project_dirs(cap=6):
+    """Distinct project roots of queued-unmined sessions — the miner writes
+    project-tier lessons into <root>/.claude/lessons, which acceptEdits only
+    auto-accepts if the directory was granted via --add-dir."""
+    dirs = []
+    try:
+        with open(QUEUE, encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                if r.get("mined"):
+                    continue
+                d = r.get("cwd") or ""
+                if d and os.path.isdir(d) and d not in dirs:
+                    dirs.append(d)
+                if len(dirs) >= cap:
+                    break
+    except OSError:
+        pass
+    return dirs
+
+
 def run_claude(claude, prompt, cfg):
     env = dict(os.environ)
     env["FLYWHEEL_AUTOPILOT"] = "1"        # guard #1
@@ -149,6 +173,12 @@ def run_claude(claude, prompt, cfg):
         cmd.append("--dangerously-skip-permissions")
     else:
         cmd += ["--permission-mode", "acceptEdits", "--allowed-tools", *ALLOWED_TOOLS]
+        # Grant the write targets mining actually needs: the flywheel home
+        # (lessons/state — cwd alone did not reliably cover it) and each queued
+        # project's root (for project-tier lessons). This was THE blocker that
+        # kept headless mining from ever landing a lesson file.
+        for d in [FLYWHEEL] + queue_project_dirs():
+            cmd += ["--add-dir", d]
     if cfg.get("model"):
         cmd += ["--model", str(cfg["model"])]
     log(f"START {prompt!r} ({cfg.get('permissionMode')})")
