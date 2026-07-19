@@ -349,11 +349,14 @@ def collect(project_root):
         logs.append({"kind": "fired", "ts": r.get("ts", 0), "lesson": r.get("lesson"),
                      "tier": r.get("tier", ""), "outcome": o or "pending",
                      "matched": (r.get("matched") or [])[:8]})
-    for ev in events:
-        if ev.get("op") in ("add", "bump-occurrence"):
-            logs.append({"kind": "learned", "ts": ev.get("ts", 0),
-                         "lesson": ev.get("lesson"), "op": ev.get("op"),
-                         "cls": ev.get("class", ""), "scope": ev.get("scope", "")})
+    learned = [{"kind": "learned", "ts": ev.get("ts", 0),
+                "lesson": ev.get("lesson"), "op": ev.get("op"),
+                "cls": ev.get("class", ""), "scope": ev.get("scope", "")}
+               for ev in events if ev.get("op") in ("add", "bump-occurrence")]
+    # "Claude wrote a lesson" moments are the rarest and most interesting log
+    # entries — cap the fired feed around them so they are never crowded out.
+    logs.sort(key=lambda r: -(r.get("ts") or 0))
+    logs = learned[:20] + logs[:max(0, 60 - min(len(learned), 20))]
     logs.sort(key=lambda r: -(r.get("ts") or 0))
 
     lesson_view = []
@@ -382,7 +385,7 @@ def collect(project_root):
             "harmful": sum(L["harmful"] for L in lessons),
         },
         "usage": usage,
-        "logs": logs[:60],
+        "logs": logs,
         "kpis": K,
         "injections": sorted(inj, key=lambda r: -r.get("ts", 0))[:50],
         "lessons": lesson_view,
